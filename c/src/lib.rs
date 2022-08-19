@@ -37,6 +37,8 @@ use pathfinder_renderer::scene::Scene;
 use pathfinder_simd::default::F32x4;
 use pathfinder_svg::SVGScene;
 use std::ffi::CString;
+use std::fs::File;
+use std::io::Read;
 use std::os::raw::{c_char, c_void};
 use std::path::PathBuf;
 use std::ptr;
@@ -805,7 +807,7 @@ pub unsafe extern "C" fn PFSceneProxyDestroy(scene_proxy: PFSceneProxyRef) {
 pub unsafe extern "C" fn PFSVGSceneCreateWithMemory(bytes: *const c_char, byte_len: usize)
                                                     -> PFSVGSceneRef {
     let data = slice::from_raw_parts(bytes as *const _, byte_len);
-    let tree = match Tree::from_data(data, &Options::default()) {
+    let tree = match Tree::from_data(data, &Options::default().to_ref()) {
         Ok(tree) => tree,
         Err(_) => return ptr::null_mut(),
     };
@@ -818,7 +820,12 @@ pub unsafe extern "C" fn PFSVGSceneCreateWithMemory(bytes: *const c_char, byte_l
 pub unsafe extern "C" fn PFSVGSceneCreateWithPath(path: *const c_char) -> PFSVGSceneRef {
     let string = to_rust_string(&path, 0);
     let path = PathBuf::from(string);
-    let tree = match Tree::from_file(path, &Options::default()) {
+    let mut data = Vec::new();
+    File::open(path)
+        .expect("Failed to open the input file!")
+        .read_to_end(&mut data)
+        .expect("Failed to read the input file!");
+    let tree = match Tree::from_data(&data, &Options::default().to_ref()) {
         Ok(tree) => tree,
         Err(_) => return ptr::null_mut(),
     };

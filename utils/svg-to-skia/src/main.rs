@@ -9,11 +9,18 @@
 // except according to those terms.
 
 use std::env;
-use usvg::{Node, NodeKind, Options, Paint, PathSegment, Tree};
+use std::fs::File;
+use std::io::Read;
+use usvg::{Node, NodeKind, Options, OptionsRef, Paint, PathSegment, Tree};
 
 fn main() {
     let input_path = env::args().skip(1).next().unwrap();
-    let tree = Tree::from_file(&input_path, &Options::default()).unwrap();
+    let mut data = Vec::new();
+    File::open(input_path)
+        .expect("Failed to open the input file!")
+        .read_to_end(&mut data)
+        .expect("Failed to read the input file!");
+    let tree = Tree::from_data(&data, &Options::default().to_ref()).unwrap();
 
     println!("#ifndef PAINT_H");
     println!("#define PAINT_H");
