@@ -133,5 +133,11 @@ fn main() {
     });
 
     // Clean up.
+
+    // Release renderer allocated GPU resources before destroying the context.
+    drop(renderer);
+
     drop(device.destroy_context(&mut context));
+
+    drop(window);
 }
