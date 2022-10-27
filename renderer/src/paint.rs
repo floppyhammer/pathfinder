@@ -719,14 +719,14 @@ impl Palette {
     pub(crate) fn append_palette(&mut self, palette: Palette) -> MergedPaletteInfo {
         // Merge render targets.
         let mut render_target_mapping = HashMap::new();
-        for (old_render_target_index, render_target) in palette.render_targets
+        for (old_render_target_index, old_render_target) in palette.render_targets
                                                                .into_iter()
                                                                .enumerate() {
             let old_render_target_id = RenderTargetId {
                 scene: palette.scene_id.0,
                 render_target: old_render_target_index as u32,
             };
-            let new_render_target_id = self.push_render_target(render_target);
+            let new_render_target_id = self.push_render_target(old_render_target);
             render_target_mapping.insert(old_render_target_id, new_render_target_id);
         }
 
