@@ -9,8 +9,8 @@
 // except according to those terms.
 
 use euclid::default::Size2D;
-use pathfinder_canvas::{Canvas, CanvasFontContext, Path2D};
-use pathfinder_color::ColorF;
+use pathfinder_canvas::{Canvas, CanvasFontContext, FillStyle, Path2D};
+use pathfinder_color::{ColorF, ColorU};
 use pathfinder_geometry::rect::RectF;
 use pathfinder_geometry::vector::{vec2f, vec2i};
 use pathfinder_gl::{GLDevice, GLVersion};
@@ -24,6 +24,11 @@ use surfman::{Connection, ContextAttributeFlags, ContextAttributes, GLVersion as
 use surfman::{SurfaceAccess, SurfaceType};
 use winit::dpi::LogicalSize;
 use winit::{ControlFlow, Event, EventsLoop, WindowBuilder, WindowEvent};
+use pathfinder_content::fill::FillRule;
+use pathfinder_content::gradient::Gradient;
+use pathfinder_content::pattern::{Image, Pattern};
+use pathfinder_geometry::line_segment::LineSegment2F;
+use pathfinder_resources::ResourceLoader;
 
 fn main() {
     // Open a window.
@@ -31,9 +36,9 @@ fn main() {
     let window_size = Size2D::new(640, 480);
     let logical_size = LogicalSize::new(window_size.width as f64, window_size.height as f64);
     let window = WindowBuilder::new().with_title("Minimal example")
-                                     .with_dimensions(logical_size)
-                                     .build(&event_loop)
-                                     .unwrap();
+        .with_dimensions(logical_size)
+        .build(&event_loop)
+        .unwrap();
     window.show();
 
     // Create a `surfman` device. On a multi-GPU system, we'll request the low-power integrated
@@ -54,7 +59,7 @@ fn main() {
     let surface_type = SurfaceType::Widget { native_widget };
     let mut context = device.create_context(&context_descriptor).unwrap();
     let surface = device.create_surface(&context, SurfaceAccess::GPUOnly, surface_type)
-                        .unwrap();
+        .unwrap();
     device.bind_surface_to_context(&mut context, surface).unwrap();
     device.make_context_current(&context).unwrap();
     gl::load_with(|symbol_name| device.get_proc_address(&context, symbol_name));
@@ -66,9 +71,9 @@ fn main() {
 
     // Create a Pathfinder GL device.
     let default_framebuffer = device.context_surface_info(&context)
-                                    .unwrap()
-                                    .unwrap()
-                                    .framebuffer_object;
+        .unwrap()
+        .unwrap()
+        .framebuffer_object;
     let pathfinder_device = GLDevice::new(GLVersion::GL3, default_framebuffer);
 
     // Create a Pathfinder renderer.
@@ -92,7 +97,7 @@ fn main() {
             Event::WindowEvent { event: WindowEvent::Refresh, .. } => {
                 should_render = true;
             }
-            _ => {},
+            _ => {}
         }
 
         if should_render {
@@ -102,8 +107,26 @@ fn main() {
             // Set line width.
             canvas.set_line_width(10.0);
 
+            // TEST: Clip path.
+            let mut path = Path2D::new();
+            path.rect(RectF::new(vec2f(0.0, 0.0), vec2f(360.0, 360.0)));
+            canvas.clip_path(path, FillRule::Winding);
+
+            // TEST: Draw image.
+            let data = resource_loader.slurp("textures/area-lut.png").unwrap();
+            let img = image::load_from_memory(&data).unwrap();
+            let rgba = img.to_rgba8();
+            let image = Image::from_image_buffer(rgba);
+            let image_size = image.size().to_f32();
+            let pattern = Pattern::from_image(image);
+            canvas.draw_image(pattern, RectF::new(vec2f(0.0, 0.0), image_size));
+
+            // TEST: Shadow.
             // Draw walls.
+            canvas.set_shadow_color(ColorU::black());
+            canvas.set_shadow_blur(16.0);
             canvas.stroke_rect(RectF::new(vec2f(75.0, 140.0), vec2f(150.0, 110.0)));
+            canvas.set_shadow_blur(0.0);
 
             // Draw door.
             canvas.fill_rect(RectF::new(vec2f(130.0, 190.0), vec2f(40.0, 60.0)));
@@ -114,6 +137,13 @@ fn main() {
             path.line_to(vec2f(150.0, 60.0));
             path.line_to(vec2f(250.0, 140.0));
             path.close_path();
+
+            // TEST: Gradient.
+            let mut gradient = Gradient::linear(LineSegment2F::new(vec2f(50.0, 140.0), vec2f(250.0, 140.0)));
+            gradient.add_color_stop(ColorU::new(255, 0, 0, 255), 0.0);
+            gradient.add_color_stop(ColorU::new(0, 0, 255, 255), 0.5);
+            gradient.add_color_stop(ColorU::new(0, 0, 255, 0), 1.0);
+            canvas.set_stroke_style(FillStyle::Gradient(gradient));
             canvas.stroke_path(path);
 
             // Render the canvas to screen.

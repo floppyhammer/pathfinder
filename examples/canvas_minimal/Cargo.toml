@@ -7,6 +7,11 @@ edition = "2018"
 [dependencies]
 gl = "0.14"
 
+[dependencies.image]
+version = "0.23"
+default-features = false
+features = ["png"]
+
 [dependencies.euclid]
 version = "0.20"
 features = []
