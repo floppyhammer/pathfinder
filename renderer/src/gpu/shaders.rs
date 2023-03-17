@@ -8,121 +8,120 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use pathfinder_gpu::{BufferTarget, BufferUploadMode, Device, VertexAttrClass};
-use pathfinder_gpu::{VertexAttrDescriptor, VertexAttrType};
+use wgpu;
 use pathfinder_resources::ResourceLoader;
 
 // TODO(pcwalton): Replace with `mem::size_of` calls?
 pub(crate) const TILE_INSTANCE_SIZE: usize = 16;
 
-pub(crate) struct BlitVertexArray<D> where D: Device {
-    pub(crate) vertex_array: D::VertexArray,
-}
+// pub(crate) struct BlitVertexArray<D> where D: Device {
+//     pub(crate) vertex_array: D::VertexArray,
+// }
+//
+// impl<D> BlitVertexArray<D> where D: Device {
+//     pub(crate) fn new(device: &D,
+//                       blit_program: &BlitProgram<D>,
+//                       quad_vertex_positions_buffer: &D::Buffer,
+//                       quad_vertex_indices_buffer: &D::Buffer)
+//                       -> BlitVertexArray<D> {
+//         let vertex_array = device.create_vertex_array();
+//         let position_attr = device.get_vertex_attr(&blit_program.program, "Position").unwrap();
+//
+//         device.bind_buffer(&vertex_array, quad_vertex_positions_buffer, BufferTarget::Vertex);
+//         device.configure_vertex_attr(&vertex_array, &position_attr, &VertexAttrDescriptor {
+//             size: 2,
+//             class: VertexAttrClass::Int,
+//             attr_type: VertexAttrType::I16,
+//             stride: 4,
+//             offset: 0,
+//             divisor: 0,
+//             buffer_index: 0,
+//         });
+//         device.bind_buffer(&vertex_array, quad_vertex_indices_buffer, BufferTarget::Index);
+//
+//         BlitVertexArray { vertex_array }
+//     }
+// }
 
-impl<D> BlitVertexArray<D> where D: Device {
-    pub(crate) fn new(device: &D,
-                      blit_program: &BlitProgram<D>,
-                      quad_vertex_positions_buffer: &D::Buffer,
-                      quad_vertex_indices_buffer: &D::Buffer)
-                      -> BlitVertexArray<D> {
-        let vertex_array = device.create_vertex_array();
-        let position_attr = device.get_vertex_attr(&blit_program.program, "Position").unwrap();
+// pub(crate) struct VertexArraysCore<D> where D: Device {
+//     pub(crate) blit_vertex_array: BlitVertexArray<D>,
+// }
+//
+// impl<D> VertexArraysCore<D> where D: Device {
+//     pub(crate) fn new(device: &D,
+//                programs: &ProgramsCore<D>,
+//                quad_vertex_positions_buffer: &D::Buffer,
+//                quad_vertex_indices_buffer: &D::Buffer)
+//                -> VertexArraysCore<D> {
+//         VertexArraysCore {
+//             blit_vertex_array: BlitVertexArray::new(device,
+//                                                     &programs.blit_program,
+//                                                     quad_vertex_positions_buffer,
+//                                                     quad_vertex_indices_buffer),
+//         }
+//     }
+// }
 
-        device.bind_buffer(&vertex_array, quad_vertex_positions_buffer, BufferTarget::Vertex);
-        device.configure_vertex_attr(&vertex_array, &position_attr, &VertexAttrDescriptor {
-            size: 2,
-            class: VertexAttrClass::Int,
-            attr_type: VertexAttrType::I16,
-            stride: 4,
-            offset: 0,
-            divisor: 0,
-            buffer_index: 0,
-        });
-        device.bind_buffer(&vertex_array, quad_vertex_indices_buffer, BufferTarget::Index);
+// pub(crate) struct ClearVertexArray<D> where D: Device {
+//     pub(crate) vertex_array: D::VertexArray,
+// }
+//
+// impl<D> ClearVertexArray<D> where D: Device {
+//     pub(crate) fn new(device: &D,
+//                       clear_program: &ClearProgram<D>,
+//                       quad_vertex_positions_buffer: &D::Buffer,
+//                       quad_vertex_indices_buffer: &D::Buffer)
+//                       -> ClearVertexArray<D> {
+//         let vertex_array = device.create_vertex_array();
+//         let position_attr = device.get_vertex_attr(&clear_program.program, "Position").unwrap();
+//
+//         device.bind_buffer(&vertex_array, quad_vertex_positions_buffer, BufferTarget::Vertex);
+//         device.configure_vertex_attr(&vertex_array, &position_attr, &VertexAttrDescriptor {
+//             size: 2,
+//             class: VertexAttrClass::Int,
+//             attr_type: VertexAttrType::I16,
+//             stride: 4,
+//             offset: 0,
+//             divisor: 0,
+//             buffer_index: 0,
+//         });
+//         device.bind_buffer(&vertex_array, quad_vertex_indices_buffer, BufferTarget::Index);
+//
+//         ClearVertexArray { vertex_array }
+//     }
+// }
 
-        BlitVertexArray { vertex_array }
-    }
-}
-
-pub(crate) struct VertexArraysCore<D> where D: Device {
-    pub(crate) blit_vertex_array: BlitVertexArray<D>,
-}
-
-impl<D> VertexArraysCore<D> where D: Device {
-    pub(crate) fn new(device: &D,
-               programs: &ProgramsCore<D>,
-               quad_vertex_positions_buffer: &D::Buffer,
-               quad_vertex_indices_buffer: &D::Buffer)
-               -> VertexArraysCore<D> {
-        VertexArraysCore {
-            blit_vertex_array: BlitVertexArray::new(device,
-                                                    &programs.blit_program,
-                                                    quad_vertex_positions_buffer,
-                                                    quad_vertex_indices_buffer),
-        }
-    }
-}
-
-pub(crate) struct ClearVertexArray<D> where D: Device {
-    pub(crate) vertex_array: D::VertexArray,
-}
-
-impl<D> ClearVertexArray<D> where D: Device {
-    pub(crate) fn new(device: &D,
-                      clear_program: &ClearProgram<D>,
-                      quad_vertex_positions_buffer: &D::Buffer,
-                      quad_vertex_indices_buffer: &D::Buffer)
-                      -> ClearVertexArray<D> {
-        let vertex_array = device.create_vertex_array();
-        let position_attr = device.get_vertex_attr(&clear_program.program, "Position").unwrap();
-
-        device.bind_buffer(&vertex_array, quad_vertex_positions_buffer, BufferTarget::Vertex);
-        device.configure_vertex_attr(&vertex_array, &position_attr, &VertexAttrDescriptor {
-            size: 2,
-            class: VertexAttrClass::Int,
-            attr_type: VertexAttrType::I16,
-            stride: 4,
-            offset: 0,
-            divisor: 0,
-            buffer_index: 0,
-        });
-        device.bind_buffer(&vertex_array, quad_vertex_indices_buffer, BufferTarget::Index);
-
-        ClearVertexArray { vertex_array }
-    }
-}
-
-pub(crate) struct BlitProgram<D> where D: Device {
-    pub(crate) program: D::Program,
+pub(crate) struct BlitProgram {
+    pub(crate) module: wgpu::ShaderModule,
     pub(crate) dest_rect_uniform: D::Uniform,
     pub(crate) framebuffer_size_uniform: D::Uniform,
     pub(crate) src_texture: D::TextureParameter,
 }
 
-impl<D> BlitProgram<D> where D: Device {
-    pub(crate) fn new(device: &D, resources: &dyn ResourceLoader) -> BlitProgram<D> {
-        let program = device.create_raster_program(resources, "blit");
+impl BlitProgram {
+    pub(crate) fn new(device: &wgpu::Device, resources: &dyn ResourceLoader) -> BlitProgram {
+        let module = device.create_shader_module(resources, "blit");
         let dest_rect_uniform = device.get_uniform(&program, "DestRect");
         let framebuffer_size_uniform = device.get_uniform(&program, "FramebufferSize");
         let src_texture = device.get_texture_parameter(&program, "Src");
-        BlitProgram { program, dest_rect_uniform, framebuffer_size_uniform, src_texture }
+        BlitProgram { module, dest_rect_uniform, framebuffer_size_uniform, src_texture }
     }
 }
 
-pub(crate) struct ProgramsCore<D> where D: Device {
-    pub(crate) blit_program: BlitProgram<D>,
+pub(crate) struct ProgramsCore {
+    pub(crate) blit_program: BlitProgram,
 }
 
-impl<D> ProgramsCore<D> where D: Device {
-    pub(crate) fn new(device: &D, resources: &dyn ResourceLoader) -> ProgramsCore<D> {
+impl ProgramsCore {
+    pub(crate) fn new(device: &wgpu::Device, resources: &dyn ResourceLoader) -> ProgramsCore {
         ProgramsCore {
             blit_program: BlitProgram::new(device, resources),
         }
     }
 }
 
-pub(crate) struct ClearProgram<D> where D: Device {
-    pub(crate) program: D::Program,
+pub(crate) struct ClearProgram {
+    pub(crate) module: wgpu::ShaderModule,
     pub(crate) rect_uniform: D::Uniform,
     pub(crate) framebuffer_size_uniform: D::Uniform,
     pub(crate) color_uniform: D::Uniform,

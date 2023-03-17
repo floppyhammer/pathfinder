@@ -37,12 +37,13 @@ use pathfinder_gpu::{TextureDataRef, TextureFormat, UniformData};
 use pathfinder_resources::ResourceLoader;
 use pathfinder_simd::default::F32x2;
 use std::u32;
+use wgpu::{BlendComponent, BlendFactor};
 
 const MAX_FILLS_PER_BATCH: usize = 0x10000;
 
-pub(crate) struct RendererD3D9<D> where D: Device {
+pub(crate) struct RendererD3D9 {
     // Basic data
-    programs: ProgramsD3D9<D>,
+    programs: ProgramsD3D9,
     quads_vertex_indices_buffer_id: Option<IndexBufferID>,
     quads_vertex_indices_length: usize,
 
@@ -50,20 +51,20 @@ pub(crate) struct RendererD3D9<D> where D: Device {
     buffered_fills: Vec<Fill>,
     pending_fills: Vec<Fill>,
 
-    // Temporary framebuffers
-    dest_blend_framebuffer_id: FramebufferID,
+    // Temporary framebuffer texture
+    dest_blend_framebuffer_id: TextureID,
 }
 
-impl<D> RendererD3D9<D> where D: Device {
-    pub(crate) fn new(core: &mut RendererCore<D>, resources: &dyn ResourceLoader)
-                      -> RendererD3D9<D> {
+impl RendererD3D9 {
+    pub(crate) fn new(core: &mut RendererCore, resources: &dyn ResourceLoader)
+                      -> RendererD3D9 {
         let programs = ProgramsD3D9::new(&core.device, resources);
 
         let window_size = core.options.dest.window_size(&core.device);
         let dest_blend_framebuffer_id =
-            core.allocator.allocate_framebuffer(&core.device,
+            core.allocator.allocate_texture(&core.device,
                                                 window_size,
-                                                TextureFormat::RGBA8,
+                                                wgpu::TextureFormat::RGBA8,
                                                 FramebufferTag("DestBlendD3D9"));
 
         RendererD3D9 {
@@ -79,7 +80,7 @@ impl<D> RendererD3D9<D> where D: Device {
     }
 
     pub(crate) fn upload_and_draw_tiles(&mut self,
-                                        core: &mut RendererCore<D>,
+                                        core: &mut RendererCore,
                                         batch: &DrawTileBatchD3D9) {
         if !batch.clips.is_empty() {
             let clip_buffer_info = self.upload_clip_tiles(core, &batch.clips);
@@ -101,7 +102,7 @@ impl<D> RendererD3D9<D> where D: Device {
         core.allocator.free_general_buffer(tile_buffer.tile_vertex_buffer_id);
     }
 
-    fn upload_tiles(&mut self, core: &mut RendererCore<D>, tiles: &[TileObjectPrimitive])
+    fn upload_tiles(&mut self, core: &mut RendererCore, tiles: &[TileObjectPrimitive])
                     -> TileBufferD3D9 {
         let tile_vertex_buffer_id =
             core.allocator.allocate_general_buffer::<TileObjectPrimitive>(&core.device,
@@ -115,7 +116,7 @@ impl<D> RendererD3D9<D> where D: Device {
     }
 
 
-    fn ensure_index_buffer(&mut self, core: &mut RendererCore<D>, mut length: usize) {
+    fn ensure_index_buffer(&mut self, core: &mut RendererCore, mut length: usize) {
         length = length.next_power_of_two();
         if self.quads_vertex_indices_length >= length {
             return;
@@ -147,7 +148,7 @@ impl<D> RendererD3D9<D> where D: Device {
         self.quads_vertex_indices_length = length;
     }
 
-    pub(crate) fn add_fills(&mut self, core: &mut RendererCore<D>, fill_batch: &[Fill]) {
+    pub(crate) fn add_fills(&mut self, core: &mut RendererCore, fill_batch: &[Fill]) {
         if fill_batch.is_empty() {
             return;
         }
@@ -173,7 +174,7 @@ impl<D> RendererD3D9<D> where D: Device {
         self.buffered_fills.extend(self.pending_fills.drain(..));
     }
 
-    pub(crate) fn draw_buffered_fills(&mut self, core: &mut RendererCore<D>) {
+    pub(crate) fn draw_buffered_fills(&mut self, core: &mut RendererCore) {
         if self.buffered_fills.is_empty() {
             return;
         }
@@ -183,7 +184,7 @@ impl<D> RendererD3D9<D> where D: Device {
         core.allocator.free_general_buffer(fill_storage_info.fill_buffer_id);
     }
 
-    fn upload_buffered_fills(&mut self, core: &mut RendererCore<D>) -> FillBufferInfoD3D9 {
+    fn upload_buffered_fills(&mut self, core: &mut RendererCore) -> FillBufferInfoD3D9 {
         let buffered_fills = &mut self.buffered_fills;
         debug_assert!(!buffered_fills.is_empty());
 
@@ -202,7 +203,7 @@ impl<D> RendererD3D9<D> where D: Device {
     }
 
     fn draw_fills(&mut self,
-                  core: &mut RendererCore<D>,
+                  core: &mut RendererCore,
                   fill_buffer_id: GeneralBufferID,
                   fill_count: u32) {
         let fill_raster_program = &self.programs.fill_program;
@@ -250,12 +251,17 @@ impl<D> RendererD3D9<D> where D: Device {
             storage_buffers: &[],
             viewport: mask_viewport,
             options: RenderOptions {
-                blend: Some(BlendState {
-                    src_rgb_factor: BlendFactor::One,
-                    src_alpha_factor: BlendFactor::One,
-                    dest_rgb_factor: BlendFactor::One,
-                    dest_alpha_factor: BlendFactor::One,
-                    ..BlendState::default()
+                blend: Some(wgpu::BlendState {
+                    color: BlendComponent {
+                        src_factor: BlendFactor::One,
+                        dst_factor: BlendFactor::One,
+                        operation: Default::default(),
+                    },
+                    alpha: BlendComponent {
+                        src_factor: BlendFactor::One,
+                        dst_factor: BlendFactor::One,
+                        operation: Default::default(),
+                    },
                 }),
                 clear_ops: ClearOps { color: clear_color, ..ClearOps::default() },
                 ..RenderOptions::default()
@@ -269,7 +275,7 @@ impl<D> RendererD3D9<D> where D: Device {
         core.framebuffer_flags.insert(FramebufferFlags::MASK_FRAMEBUFFER_IS_DIRTY);
     }
 
-    fn clip_tiles(&mut self, core: &mut RendererCore<D>, clip_buffer_info: &ClipBufferInfo) {
+    fn clip_tiles(&mut self, core: &mut RendererCore, clip_buffer_info: &ClipBufferInfo) {
         // Allocate temp mask framebuffer.
         let mask_temp_framebuffer_id =
             core.allocator.allocate_framebuffer(&core.device,
@@ -362,11 +368,11 @@ impl<D> RendererD3D9<D> where D: Device {
         core.allocator.free_framebuffer(mask_temp_framebuffer_id);
     }
 
-    fn upload_z_buffer(&mut self, core: &mut RendererCore<D>, z_buffer_map: &DenseTileMap<i32>)
+    fn upload_z_buffer(&mut self, core: &mut RendererCore, z_buffer_map: &DenseTileMap<i32>)
                        -> TextureID {
         let z_buffer_texture_id = core.allocator.allocate_texture(&core.device,
                                                                   z_buffer_map.rect.size(),
-                                                                  TextureFormat::RGBA8,
+                                                                  wgpu::TextureFormat::Rgba8Unorm,
                                                                   TextureTag("ZBufferD3D9"));
         let z_buffer_texture = core.allocator.get_texture(z_buffer_texture_id);
         debug_assert_eq!(z_buffer_map.rect.origin(), Vector2I::default());
@@ -378,7 +384,7 @@ impl<D> RendererD3D9<D> where D: Device {
     }
 
     // Uploads clip tiles from CPU to GPU.
-    fn upload_clip_tiles(&mut self, core: &mut RendererCore<D>, clips: &[Clip]) -> ClipBufferInfo {
+    fn upload_clip_tiles(&mut self, core: &mut RendererCore, clips: &[Clip]) -> ClipBufferInfo {
         let clip_buffer_id = core.allocator.allocate_general_buffer::<Clip>(&core.device,
                                                                             clips.len() as u64,
                                                                             BufferTag("ClipD3D9"));
@@ -388,7 +394,7 @@ impl<D> RendererD3D9<D> where D: Device {
     }
 
     fn draw_tiles(&mut self,
-                  core: &mut RendererCore<D>,
+                  core: &mut RendererCore,
                   tile_count: u32,
                   tile_vertex_buffer_id: GeneralBufferID,
                   color_texture_0: Option<TileBatchTexture>,
@@ -472,7 +478,7 @@ impl<D> RendererD3D9<D> where D: Device {
     }
 
     fn copy_alpha_tiles_to_dest_blend_texture(&mut self,
-                                              core: &mut RendererCore<D>,
+                                              core: &mut RendererCore,
                                               tile_count: u32,
                                               vertex_buffer_id: GeneralBufferID) {
         let draw_viewport = core.draw_viewport();
@@ -507,7 +513,7 @@ impl<D> RendererD3D9<D> where D: Device {
                                                               quads_vertex_indices_buffer);
 
         let dest_blend_framebuffer = core.allocator
-                                         .get_framebuffer(self.dest_blend_framebuffer_id);
+                                         .get_texture(self.dest_blend_framebuffer_id);
 
         core.device.draw_elements(tile_count * 6, &RenderState {
             target: &RenderTarget::Framebuffer(dest_blend_framebuffer),
@@ -531,20 +537,25 @@ impl<D> RendererD3D9<D> where D: Device {
         core.stats.drawcall_count += 1;
     }
 
-    fn stencil_state(&self, core: &RendererCore<D>) -> Option<StencilState> {
+    fn stencil_state(&self, core: &RendererCore) -> Option<wgpu::StencilState> {
         if !core.renderer_flags.contains(RendererFlags::USE_DEPTH) {
             return None;
         }
 
-        Some(StencilState {
-            func: StencilFunc::Equal,
-            reference: 1,
-            mask: 1,
-            write: false,
+        // Original code
+        // func: StencilFunc::Equal,
+        // reference: 1,
+        // mask: 1,
+        // write: false,
+        Some(wgpu::StencilState {
+            front: Default::default(),
+            back: Default::default(),
+            read_mask: 0,
+            write_mask: 0,
         })
     }
 
-    fn mask_viewport(&self, core: &RendererCore<D>) -> RectI {
+    fn mask_viewport(&self, core: &RendererCore) -> RectI {
         let page_count = match core.mask_storage {
             Some(ref mask_storage) => mask_storage.allocated_page_count as i32,
             None => 0,
@@ -553,7 +564,7 @@ impl<D> RendererD3D9<D> where D: Device {
         RectI::new(Vector2I::default(), vec2i(MASK_FRAMEBUFFER_WIDTH, height))
     }
 
-    fn tile_transform(&self, core: &RendererCore<D>) -> Transform4F {
+    fn tile_transform(&self, core: &RendererCore) -> Transform4F {
         let draw_viewport = core.draw_viewport().size().to_f32();
         let scale = Vector4F::new(2.0 / draw_viewport.x(), -2.0 / draw_viewport.y(), 1.0, 1.0);
         Transform4F::from_scale(scale).translate(Vector4F::new(-1.0, 1.0, 0.0, 1.0))

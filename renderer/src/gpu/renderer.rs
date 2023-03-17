@@ -42,6 +42,7 @@ use std::collections::VecDeque;
 use std::f32;
 use std::time::Duration;
 use std::u32;
+use wgpu;
 
 static QUAD_VERTEX_POSITIONS: [u16; 8] = [0, 0, 1, 0, 1, 1, 0, 1];
 static QUAD_VERTEX_INDICES: [u32; 6] = [0, 1, 3, 1, 2, 3];
@@ -53,36 +54,33 @@ pub(crate) const MASK_TILES_DOWN: u32 = 256;
 const SQRT_2_PI_INV: f32 = 0.3989422804014327;
 
 const TEXTURE_METADATA_ENTRIES_PER_ROW: i32 = 128;
-const TEXTURE_METADATA_TEXTURE_WIDTH:   i32 = TEXTURE_METADATA_ENTRIES_PER_ROW * 10;
-const TEXTURE_METADATA_TEXTURE_HEIGHT:  i32 = 65536 / TEXTURE_METADATA_ENTRIES_PER_ROW;
+const TEXTURE_METADATA_TEXTURE_WIDTH: i32 = TEXTURE_METADATA_ENTRIES_PER_ROW * 10;
+const TEXTURE_METADATA_TEXTURE_HEIGHT: i32 = 65536 / TEXTURE_METADATA_ENTRIES_PER_ROW;
 
 // FIXME(pcwalton): Shrink this again!
-pub(crate) const MASK_FRAMEBUFFER_WIDTH:  i32 = TILE_WIDTH as i32      * MASK_TILES_ACROSS as i32;
+pub(crate) const MASK_FRAMEBUFFER_WIDTH: i32 = TILE_WIDTH as i32 * MASK_TILES_ACROSS as i32;
 pub(crate) const MASK_FRAMEBUFFER_HEIGHT: i32 = TILE_HEIGHT as i32 / 4 * MASK_TILES_DOWN as i32;
 
-const COMBINER_CTRL_FILTER_RADIAL_GRADIENT: i32 =   0x1;
-const COMBINER_CTRL_FILTER_TEXT: i32 =              0x2;
-const COMBINER_CTRL_FILTER_BLUR: i32 =              0x3;
-const COMBINER_CTRL_FILTER_COLOR_MATRIX: i32 =      0x4;
+const COMBINER_CTRL_FILTER_RADIAL_GRADIENT: i32 = 0x1;
+const COMBINER_CTRL_FILTER_TEXT: i32 = 0x2;
+const COMBINER_CTRL_FILTER_BLUR: i32 = 0x3;
+const COMBINER_CTRL_FILTER_COLOR_MATRIX: i32 = 0x4;
 
-const COMBINER_CTRL_COLOR_FILTER_SHIFT: i32 =       4;
-const COMBINER_CTRL_COLOR_COMBINE_SHIFT: i32 =      8;
-const COMBINER_CTRL_COMPOSITE_SHIFT: i32 =         10;
+const COMBINER_CTRL_COLOR_FILTER_SHIFT: i32 = 4;
+const COMBINER_CTRL_COLOR_COMBINE_SHIFT: i32 = 8;
+const COMBINER_CTRL_COMPOSITE_SHIFT: i32 = 10;
 
 /// The GPU renderer that processes commands necessary to render a scene.
-pub struct Renderer<D> where D: Device {
+pub struct Renderer {
     // Basic data
-    pub(crate) core: RendererCore<D>,
-    level_impl: RendererLevelImpl<D>,
+    pub(crate) core: RendererCore,
+    level_impl: RendererLevelImpl,
 
     // Shaders
-    blit_program: BlitProgram<D>,
-    clear_program: ClearProgram<D>,
-    stencil_program: StencilProgram<D>,
-    reprojection_program: ReprojectionProgram<D>,
-
-    // Frames
-    frame: Frame<D>,
+    blit_program: BlitProgram,
+    clear_program: ClearProgram,
+    stencil_program: StencilProgram,
+    reprojection_program: ReprojectionProgram,
 
     // Debug
     current_cpu_build_time: Option<Duration>,
@@ -92,15 +90,16 @@ pub struct Renderer<D> where D: Device {
     last_rendering_time: Option<RenderTime>,
 }
 
-enum RendererLevelImpl<D> where D: Device {
-    D3D9(RendererD3D9<D>),
-    D3D11(RendererD3D11<D>),
+enum RendererLevelImpl where {
+    D3D9(RendererD3D9),
+    // D3D11(RendererD3D11),
 }
 
-pub(crate) struct RendererCore<D> where D: Device {
+pub(crate) struct RendererCore {
     // Basic data
-    pub(crate) device: D,
-    pub(crate) allocator: GPUMemoryAllocator<D>,
+    pub(crate) device: wgpu::Device,
+    pub(crate) queue: wgpu::Queue,
+    pub(crate) allocator: GPUMemoryAllocator,
     pub(crate) mode: RendererMode,
     pub(crate) options: RendererOptions<D>,
     pub(crate) renderer_flags: RendererFlags,
@@ -111,8 +110,7 @@ pub(crate) struct RendererCore<D> where D: Device {
     pub(crate) timer_query_cache: TimerQueryCache<D>,
 
     // Core shaders
-    pub(crate) programs: ProgramsCore<D>,
-    pub(crate) vertex_arrays: VertexArraysCore<D>,
+    pub(crate) programs: ProgramsCore,
 
     // Read-only static core resources
     pub(crate) quad_vertex_positions_buffer_id: GeneralBufferID,
@@ -121,7 +119,7 @@ pub(crate) struct RendererCore<D> where D: Device {
     pub(crate) gamma_lut_texture_id: TextureID,
 
     // Read-write static core resources
-    intermediate_dest_framebuffer_id: FramebufferID,
+    intermediate_dest_framebuffer_id: TextureID,
     intermediate_dest_framebuffer_size: Vector2I,
     pub(crate) texture_metadata_texture_id: TextureID,
 
@@ -134,42 +132,35 @@ pub(crate) struct RendererCore<D> where D: Device {
     pub(crate) framebuffer_flags: FramebufferFlags,
 }
 
-// TODO(pcwalton): Remove this.
-struct Frame<D> where D: Device {
-    blit_vertex_array: BlitVertexArray<D>,
-    clear_vertex_array: ClearVertexArray<D>,
-    stencil_vertex_array: StencilVertexArray<D>,
-    reprojection_vertex_array: ReprojectionVertexArray<D>,
-}
-
 pub(crate) struct MaskStorage {
-    pub(crate) framebuffer_id: FramebufferID,
+    pub(crate) framebuffer_id: TextureID,
     pub(crate) allocated_page_count: u32,
 }
 
-impl<D> Renderer<D> where D: Device {
+impl Renderer {
     /// Creates a new renderer ready to render Pathfinder content.
-    /// 
+    ///
     /// Arguments:
-    /// 
+    ///
     /// * `device`: The GPU device to render with. This effectively specifies the system GPU API
     ///   Pathfinder will use (OpenGL, Metal, etc.)
-    /// 
+    ///
     /// * `resources`: Where Pathfinder should find shaders, lookup tables, and other data.
     ///   This is typically either an `EmbeddedResourceLoader` to use resources included in the
     ///   Pathfinder library or (less commonly) a `FilesystemResourceLoader` to use resources
     ///   stored in a directory on disk.
-    /// 
+    ///
     /// * `mode`: Renderer options that can't be changed after the renderer is created. Most
     ///   notably, this specifies the API level (D3D9 or D3D11).
-    /// 
+    ///
     /// * `options`: Renderer options that can be changed after the renderer is created. Most
     ///   importantly, this specifies where the output should go (to a window or off-screen).
-    pub fn new(device: D,
+    pub fn new(device: wgpu::Device,
+               queue: wgpu::Queue,
                resources: &dyn ResourceLoader,
                mode: RendererMode,
                options: RendererOptions<D>)
-               -> Renderer<D> {
+               -> Renderer {
         let mut allocator = GPUMemoryAllocator::new();
 
         device.begin_commands();
@@ -178,18 +169,21 @@ impl<D> Renderer<D> where D: Device {
             allocator.allocate_general_buffer::<u16>(&device,
                                                      QUAD_VERTEX_POSITIONS.len() as u64,
                                                      BufferTag("QuadVertexPositions"));
-        device.upload_to_buffer(allocator.get_general_buffer(quad_vertex_positions_buffer_id),
-                                0,
-                                &QUAD_VERTEX_POSITIONS,
-                                BufferTarget::Vertex);
+        queue.write_buffer(
+            &allocator.get_general_buffer(quad_vertex_positions_buffer_id),
+            0,
+            bytemuck::cast_slice(&QUAD_VERTEX_POSITIONS),
+        );
+
         let quad_vertex_indices_buffer_id =
             allocator.allocate_index_buffer::<u32>(&device,
                                                    QUAD_VERTEX_INDICES.len() as u64,
                                                    BufferTag("QuadVertexIndices"));
-        device.upload_to_buffer(allocator.get_index_buffer(quad_vertex_indices_buffer_id),
-                                0,
-                                &QUAD_VERTEX_INDICES,
-                                BufferTarget::Index);
+        queue.write_buffer(
+            &allocator.get_index_buffer(quad_vertex_indices_buffer_id),
+            0,
+            bytemuck::cast_slice(&QUAD_VERTEX_INDICES),
+        );
 
         let area_lut_texture_id = allocator.allocate_texture(&device,
                                                              Vector2I::splat(256),
@@ -199,20 +193,21 @@ impl<D> Renderer<D> where D: Device {
                                                               vec2i(256, 8),
                                                               TextureFormat::R8,
                                                               TextureTag("GammaLUT"));
-        device.upload_png_to_texture(resources,
-                                     "area-lut",
-                                     allocator.get_texture(area_lut_texture_id),
-                                     TextureFormat::RGBA8);
-        device.upload_png_to_texture(resources,
-                                     "gamma-lut",
-                                     allocator.get_texture(gamma_lut_texture_id),
-                                     TextureFormat::R8);
+        pathfinder_gpu::upload_png_to_texture(queue,
+                                              resources,
+                                              "area-lut",
+                                              allocator.get_texture(area_lut_texture_id),
+                                              TextureFormat::RGBA8);
+        pathfinder_gpu::upload_png_to_texture(queue, resources,
+                                              "gamma-lut",
+                                              allocator.get_texture(gamma_lut_texture_id),
+                                              TextureFormat::R8);
 
         let window_size = options.dest.window_size(&device);
         let intermediate_dest_framebuffer_id =
-            allocator.allocate_framebuffer(&device,
+            allocator.allocate_texture(&device,
                                            window_size,
-                                           TextureFormat::RGBA8,
+                                       wgpu::TextureFormat::RGBA8,
                                            FramebufferTag("IntermediateDest"));
 
         let texture_metadata_texture_size = vec2i(TEXTURE_METADATA_TEXTURE_WIDTH,
@@ -220,15 +215,15 @@ impl<D> Renderer<D> where D: Device {
         let texture_metadata_texture_id =
             allocator.allocate_texture(&device,
                                        texture_metadata_texture_size,
-                                       TextureFormat::RGBA16F,
+                                       wgpu::TextureFormat::Rgba,
                                        TextureTag("TextureMetadata"));
 
         let core_programs = ProgramsCore::new(&device, resources);
         let core_vertex_arrays =
-             VertexArraysCore::new(&device,
-                                   &core_programs,
-                                   allocator.get_general_buffer(quad_vertex_positions_buffer_id),
-                                   allocator.get_index_buffer(quad_vertex_indices_buffer_id));
+            VertexArraysCore::new(&device,
+                                  &core_programs,
+                                  allocator.get_general_buffer(quad_vertex_positions_buffer_id),
+                                  allocator.get_index_buffer(quad_vertex_indices_buffer_id));
 
         let mut core = RendererCore {
             device,
@@ -280,15 +275,6 @@ impl<D> Renderer<D> where D: Device {
             None
         };
 
-        let frame = Frame::new(&core.device,
-                               &mut core.allocator,
-                               &blit_program,
-                               &clear_program,
-                               &reprojection_program,
-                               &stencil_program,
-                               quad_vertex_positions_buffer_id,
-                               quad_vertex_indices_buffer_id);
-
         core.device.end_commands();
 
         Renderer {
@@ -297,8 +283,6 @@ impl<D> Renderer<D> where D: Device {
 
             blit_program,
             clear_program,
-
-            frame,
 
             stencil_program,
             reprojection_program,
@@ -317,7 +301,7 @@ impl<D> Renderer<D> where D: Device {
     }
 
     /// Performs work necessary to begin rendering a scene.
-    /// 
+    ///
     /// This must be called before `render_command()`.
     pub fn begin_scene(&mut self) {
         self.core.framebuffer_flags = FramebufferFlags::empty();
@@ -330,9 +314,9 @@ impl<D> Renderer<D> where D: Device {
     }
 
     /// Issues a rendering command to the renderer.
-    /// 
+    ///
     /// These commands are generated from methods like `Scene::build()`.
-    /// 
+    ///
     /// `begin_scene()` must have been called first.
     pub fn render_command(&mut self, command: &RenderCommand) {
         debug!("render command: {:?}", command);
@@ -383,10 +367,10 @@ impl<D> Renderer<D> where D: Device {
     }
 
     /// Finishes rendering a scene.
-    /// 
+    ///
     /// `begin_scene()` and all `render_command()` calls must have been issued before calling this
     /// method.
-    /// 
+    ///
     /// Note that, after calling this method, you might need to flush the output to the screen via
     /// `swap_buffers()`, `present()`, or a similar method that your windowing library offers.
     pub fn end_scene(&mut self) {
@@ -494,7 +478,7 @@ impl<D> Renderer<D> where D: Device {
     }
 
     /// Returns a reference to the GPU device.
-    /// 
+    ///
     /// This can be useful to issue GPU commands manually via the low-level `pathfinder_gpu`
     /// abstraction. (Of course, you can also use your platform API such as OpenGL directly
     /// alongside Pathfinder.)
@@ -504,7 +488,7 @@ impl<D> Renderer<D> where D: Device {
     }
 
     /// Returns a mutable reference to the GPU device.
-    /// 
+    ///
     /// This can be useful to issue GPU commands manually via the low-level `pathfinder_gpu`
     /// abstraction. (Of course, you can also use your platform API such as OpenGL directly
     /// alongside Pathfinder.)
@@ -526,10 +510,10 @@ impl<D> Renderer<D> where D: Device {
     }
 
     /// Returns a mutable reference to the current rendering options, allowing them to be changed.
-    /// 
+    ///
     /// Among other things, you can use this function to change the destination of rendering
     /// output without having to recreate the renderer.
-    /// 
+    ///
     /// After changing the destination framebuffer size, you must call
     /// `dest_framebuffer_size_changed()`.
     pub fn options_mut(&mut self) -> &mut RendererOptions<D> {
@@ -537,7 +521,7 @@ impl<D> Renderer<D> where D: Device {
     }
 
     /// Notifies Pathfinder that the size of the output framebuffer has changed.
-    /// 
+    ///
     /// You must call this function after changing the `dest_framebuffer` member of
     /// `RendererOptions` to a target with a different size.
     #[inline]
@@ -549,7 +533,7 @@ impl<D> Renderer<D> where D: Device {
     }
 
     /// Returns a mutable reference to the debug UI.
-    /// 
+    ///
     /// You can use this function to draw custom debug widgets on screen, as the demo does.
     #[inline]
     pub fn debug_ui_presenter_mut(&mut self) -> DebugUIPresenterInfo<D> {
@@ -581,7 +565,7 @@ impl<D> Renderer<D> where D: Device {
     }
 
     /// Returns a GPU-side vertex buffer containing 2D vertices of a unit square.
-    /// 
+    ///
     /// This can be handy for custom rendering.
     #[inline]
     pub fn quad_vertex_positions_buffer(&self) -> &D::Buffer {
@@ -590,7 +574,7 @@ impl<D> Renderer<D> where D: Device {
 
     /// Returns a GPU-side 32-bit unsigned index buffer of triangles necessary to render a quad
     /// with the buffer returned by `quad_vertex_positions_buffer()`.
-    /// 
+    ///
     /// This can be handy for custom rendering.
     #[inline]
     pub fn quad_vertex_indices_buffer(&self) -> &D::Buffer {
@@ -614,11 +598,11 @@ impl<D> Renderer<D> where D: Device {
         // Allocate texture.
         let texture_size = descriptor.size;
         let framebuffer_id = self.core
-                                 .allocator
-                                 .allocate_framebuffer(&self.core.device,
-                                                       texture_size,
-                                                       TextureFormat::RGBA8,
-                                                       FramebufferTag("PatternPage"));
+            .allocator
+            .allocate_framebuffer(&self.core.device,
+                                  texture_size,
+                                  wgpu::TextureFormat::Rgba8Unorm,
+                                  FramebufferTag("PatternPage"));
         self.core.pattern_texture_pages[page_index] = Some(PatternTexturePage {
             framebuffer_id,
             must_preserve_contents: false,
@@ -627,14 +611,12 @@ impl<D> Renderer<D> where D: Device {
 
     fn upload_texel_data(&mut self, texels: &[ColorU], location: TextureLocation) {
         let texture_page = self.core
-                               .pattern_texture_pages[location.page.0 as usize]
-                               .as_mut()
-                               .expect("Texture page not allocated yet!");
-        let framebuffer_id = texture_page.framebuffer_id;
-        let framebuffer = self.core.allocator.get_framebuffer(framebuffer_id);
-        let texture = self.core.device.framebuffer_texture(framebuffer);
+            .pattern_texture_pages[location.page.0 as usize]
+            .as_mut()
+            .expect("Texture page not allocated yet!");
+        let texture = self.core.allocator.get_texture(texture_page.texture_id);
         let texels = color::color_slice_to_u8_slice(texels);
-        self.core.device.upload_to_texture(texture, location.rect, TextureDataRef::U8(texels));
+        pathfinder_gpu::upload_to_texture(&self.core.queue, texture, location.rect, wgpu::TextureFormat::R8Unorm);
         texture_page.must_preserve_contents = true;
     }
 
@@ -655,7 +637,7 @@ impl<D> Renderer<D> where D: Device {
     fn upload_texture_metadata(&mut self, metadata: &[TextureMetadataEntry]) {
         let padded_texel_size =
             (util::alignup_i32(metadata.len() as i32, TEXTURE_METADATA_ENTRIES_PER_ROW) *
-             TEXTURE_METADATA_TEXTURE_WIDTH * 4) as usize;
+                TEXTURE_METADATA_TEXTURE_WIDTH * 4) as usize;
         let mut texels = Vec::with_capacity(padded_texel_size);
         for entry in metadata {
             let base_color = entry.base_color.to_f32();
@@ -739,8 +721,8 @@ impl<D> Renderer<D> where D: Device {
             indices.extend_from_slice(&[0, index as u32, index + 1]);
         }
         self.core.device.allocate_buffer(&self.frame.stencil_vertex_array.index_buffer,
-                                    BufferData::Memory(&indices),
-                                    BufferTarget::Index);
+                                         BufferData::Memory(&indices),
+                                         BufferTarget::Index);
 
         self.core.device.draw_elements(indices.len() as u32, &RenderState {
             target: &self.core.draw_render_target(),
@@ -797,7 +779,7 @@ impl<D> Renderer<D> where D: Device {
             viewport: self.core.draw_viewport(),
             options: RenderOptions {
                 blend: BlendMode::SrcOver.to_blend_state(),
-                depth: Some(DepthState { func: DepthFunc::Less, write: false, }),
+                depth: Some(DepthState { func: DepthFunc::Less, write: false }),
                 clear_ops: ClearOps { color: clear_color, ..ClearOps::default() },
                 ..RenderOptions::default()
             },
@@ -852,8 +834,8 @@ impl<D> Renderer<D> where D: Device {
 
     fn blit_intermediate_dest_framebuffer_if_necessary(&mut self) {
         if !self.core
-                .renderer_flags
-                .contains(RendererFlags::INTERMEDIATE_DEST_FRAMEBUFFER_NEEDED) {
+            .renderer_flags
+            .contains(RendererFlags::INTERMEDIATE_DEST_FRAMEBUFFER_NEEDED) {
             return;
         }
 
@@ -935,7 +917,7 @@ impl<D> Renderer<D> where D: Device {
                     p3: F32x4::default(),
                     p4: F32x4::default(),
                     ctrl: ctrl | (COMBINER_CTRL_FILTER_RADIAL_GRADIENT <<
-                                  COMBINER_CTRL_COLOR_FILTER_SHIFT)
+                        COMBINER_CTRL_COLOR_FILTER_SHIFT),
                 }
             }
             Filter::PatternFilter(PatternFilter::Blur { sigma, direction }) => {
@@ -960,12 +942,12 @@ impl<D> Renderer<D> where D: Device {
                     ctrl: ctrl | (COMBINER_CTRL_FILTER_BLUR << COMBINER_CTRL_COLOR_FILTER_SHIFT),
                 }
             }
-            Filter::PatternFilter(PatternFilter::Text { 
-                fg_color,
-                bg_color,
-                defringing_kernel,
-                gamma_correction,
-            }) => {
+            Filter::PatternFilter(PatternFilter::Text {
+                                      fg_color,
+                                      bg_color,
+                                      defringing_kernel,
+                                      gamma_correction,
+                                  }) => {
                 let mut p2 = fg_color.0;
                 p2.set_w(gamma_correction as i32 as f32);
 
@@ -984,7 +966,11 @@ impl<D> Renderer<D> where D: Device {
             Filter::PatternFilter(PatternFilter::ColorMatrix(matrix)) => {
                 let [p0, p1, p2, p3, p4] = matrix.0;
                 FilterParams {
-                    p0, p1, p2, p3, p4,
+                    p0,
+                    p1,
+                    p2,
+                    p3,
+                    p4,
                     ctrl: ctrl | (COMBINER_CTRL_FILTER_COLOR_MATRIX << COMBINER_CTRL_COLOR_FILTER_SHIFT),
                 }
             }
@@ -1075,11 +1061,11 @@ impl<D> RendererCore<D> where D: Device {
     }
 
     pub(crate) fn set_uniforms_for_drawing_tiles<'a>(
-            &'a self,
-            tile_program: &'a TileProgramCommon<D>,
-            textures: &mut Vec<TextureBinding<'a, D::TextureParameter, D::Texture>>,
-            uniforms: &mut Vec<UniformBinding<'a, D::Uniform>>,
-            color_texture_0: Option<TileBatchTexture>) {
+        &'a self,
+        tile_program: &'a TileProgramCommon<D>,
+        textures: &mut Vec<TextureBinding<'a, D::TextureParameter, D::Texture>>,
+        uniforms: &mut Vec<UniformBinding<'a, D::Uniform>>,
+        color_texture_0: Option<TileBatchTexture>) {
         let draw_viewport = self.draw_viewport();
 
         let gamma_lut_texture = self.allocator.get_texture(self.gamma_lut_texture_id);
@@ -1133,9 +1119,9 @@ impl<D> RendererCore<D> where D: Device {
 
     fn texture_page_framebuffer(&self, id: TexturePageId) -> &D::Framebuffer {
         let framebuffer_id = self.pattern_texture_pages[id.0 as usize]
-                                 .as_ref()
-                                 .expect("Texture page not allocated!")
-                                 .framebuffer_id;
+            .as_ref()
+            .expect("Texture page not allocated!")
+            .framebuffer_id;
         self.allocator.get_framebuffer(framebuffer_id)
     }
 
@@ -1203,7 +1189,7 @@ impl<D> RendererCore<D> where D: Device {
             }
             None => {
                 if self.renderer_flags
-                       .contains(RendererFlags::INTERMEDIATE_DEST_FRAMEBUFFER_NEEDED) {
+                    .contains(RendererFlags::INTERMEDIATE_DEST_FRAMEBUFFER_NEEDED) {
                     let intermediate_dest_framebuffer =
                         self.allocator.get_framebuffer(self.intermediate_dest_framebuffer_id);
                     RenderTarget::Framebuffer(intermediate_dest_framebuffer)
@@ -1348,12 +1334,12 @@ struct FilterParams {
 }
 
 pub(crate) struct PatternTexturePage {
-    pub(crate) framebuffer_id: FramebufferID,
+    pub(crate) texture_id: TextureID,
     pub(crate) must_preserve_contents: bool,
 }
 
 /// A mutable reference to the debug UI presenter.
-/// 
+///
 /// You can use this structure to draw custom debug widgets on screen, as the demo does.
 pub struct DebugUIPresenterInfo<'a, D> where D: Device {
     /// The GPU device.

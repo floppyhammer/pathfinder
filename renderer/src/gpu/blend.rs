@@ -10,6 +10,7 @@
 
 //! Helpers for blending.
 
+use wgpu::{BlendComponent, BlendFactor, BlendState};
 use crate::gpu_data::ColorCombineMode;
 use crate::paint::PaintCompositeOp;
 use pathfinder_content::effects::BlendMode;
@@ -44,101 +45,156 @@ impl ToBlendState for BlendMode {
         match self {
             BlendMode::Clear => {
                 Some(BlendState {
-                    src_rgb_factor: BlendFactor::Zero,
-                    dest_rgb_factor: BlendFactor::Zero,
-                    src_alpha_factor: BlendFactor::Zero,
-                    dest_alpha_factor: BlendFactor::Zero,
-                    ..BlendState::default()
+                    color: BlendComponent {
+                        src_factor: BlendFactor::Zero,
+                        dst_factor: BlendFactor::Zero,
+                        operation: Default::default(),
+                    },
+                    alpha: BlendComponent {
+                        src_factor: BlendFactor::Zero,
+                        dst_factor: BlendFactor::Zero,
+                        operation: Default::default(),
+                    },
                 })
             }
             BlendMode::SrcOver => {
                 Some(BlendState {
-                    src_rgb_factor: BlendFactor::One,
-                    dest_rgb_factor: BlendFactor::OneMinusSrcAlpha,
-                    src_alpha_factor: BlendFactor::One,
-                    dest_alpha_factor: BlendFactor::OneMinusSrcAlpha,
-                    ..BlendState::default()
+                    color: BlendComponent {
+                        src_factor: BlendFactor::One,
+                        dst_factor: BlendFactor::OneMinusSrcAlpha,
+                        operation: Default::default(),
+                    },
+                    alpha: BlendComponent {
+                        src_factor: BlendFactor::One,
+                        dst_factor: BlendFactor::OneMinusSrcAlpha,
+                        operation: Default::default(),
+                    },
                 })
             }
             BlendMode::DestOver => {
                 Some(BlendState {
-                    src_rgb_factor: BlendFactor::OneMinusDestAlpha,
-                    dest_rgb_factor: BlendFactor::One,
-                    src_alpha_factor: BlendFactor::OneMinusDestAlpha,
-                    dest_alpha_factor: BlendFactor::One,
-                    ..BlendState::default()
+                    color: BlendComponent {
+                        src_factor: BlendFactor::OneMinusDestAlpha,
+                        dst_factor: BlendFactor::One,
+                        operation: Default::default(),
+                    },
+                    alpha: BlendComponent {
+                        src_factor: BlendFactor::OneMinusDestAlpha,
+                        dst_factor: BlendFactor::One,
+                        operation: Default::default(),
+                    },
                 })
             }
             BlendMode::SrcIn => {
                 Some(BlendState {
-                    src_rgb_factor: BlendFactor::DestAlpha,
-                    dest_rgb_factor: BlendFactor::Zero,
-                    src_alpha_factor: BlendFactor::DestAlpha,
-                    dest_alpha_factor: BlendFactor::Zero,
-                    ..BlendState::default()
+                    color: BlendComponent {
+                        src_factor: BlendFactor::DstAlpha,
+                        dst_factor: BlendFactor::Zero,
+                        operation: Default::default(),
+                    },
+                    alpha: BlendComponent {
+                        src_factor: BlendFactor::DstAlpha,
+                        dst_factor: BlendFactor::Zero,
+                        operation: Default::default(),
+                    },
                 })
             }
             BlendMode::DestIn => {
                 Some(BlendState {
-                    src_rgb_factor: BlendFactor::Zero,
-                    dest_rgb_factor: BlendFactor::SrcAlpha,
-                    src_alpha_factor: BlendFactor::Zero,
-                    dest_alpha_factor: BlendFactor::SrcAlpha,
-                    ..BlendState::default()
+                    color: BlendComponent {
+                        src_factor: BlendFactor::Zero,
+                        dst_factor: BlendFactor::SrcAlpha,
+                        operation: Default::default(),
+                    },
+                    alpha: BlendComponent {
+                        src_factor: BlendFactor::Zero,
+                        dst_factor: BlendFactor::SrcAlpha,
+                        operation: Default::default(),
+                    },
                 })
             }
             BlendMode::SrcOut => {
                 Some(BlendState {
-                    src_rgb_factor: BlendFactor::OneMinusDestAlpha,
-                    dest_rgb_factor: BlendFactor::Zero,
-                    src_alpha_factor: BlendFactor::OneMinusDestAlpha,
-                    dest_alpha_factor: BlendFactor::Zero,
-                    ..BlendState::default()
+                    color: BlendComponent {
+                        src_factor: BlendFactor::OneMinusDstAlpha,
+                        dst_factor: BlendFactor::Zero,
+                        operation: Default::default(),
+                    },
+                    alpha: BlendComponent {
+                        src_factor: BlendFactor::OneMinusDstAlpha,
+                        dst_factor: BlendFactor::Zero,
+                        operation: Default::default(),
+                    },
                 })
             }
             BlendMode::DestOut => {
                 Some(BlendState {
-                    src_rgb_factor: BlendFactor::Zero,
-                    dest_rgb_factor: BlendFactor::OneMinusSrcAlpha,
-                    src_alpha_factor: BlendFactor::Zero,
-                    dest_alpha_factor: BlendFactor::OneMinusSrcAlpha,
-                    ..BlendState::default()
+                    color: BlendComponent {
+                        src_factor: BlendFactor::OneMinusSrcAlpha,
+                        dst_factor: BlendFactor::Zero,
+                        operation: Default::default(),
+                    },
+                    alpha: BlendComponent {
+                        src_factor: BlendFactor::OneMinusSrcAlpha,
+                        dst_factor: BlendFactor::Zero,
+                        operation: Default::default(),
+                    },
                 })
             }
             BlendMode::SrcAtop => {
                 Some(BlendState {
-                    src_rgb_factor: BlendFactor::DestAlpha,
-                    dest_rgb_factor: BlendFactor::OneMinusSrcAlpha,
-                    src_alpha_factor: BlendFactor::DestAlpha,
-                    dest_alpha_factor: BlendFactor::OneMinusSrcAlpha,
-                    ..BlendState::default()
+                    color: BlendComponent {
+                        src_factor: BlendFactor::DstAlpha,
+                        dst_factor: BlendFactor::OneMinusSrcAlpha,
+                        operation: Default::default(),
+                    },
+                    alpha: BlendComponent {
+                        src_factor: BlendFactor::DstAlpha,
+                        dst_factor: BlendFactor::OneMinusSrcAlpha,
+                        operation: Default::default(),
+                    },
                 })
             }
             BlendMode::DestAtop => {
                 Some(BlendState {
-                    src_rgb_factor: BlendFactor::OneMinusDestAlpha,
-                    dest_rgb_factor: BlendFactor::SrcAlpha,
-                    src_alpha_factor: BlendFactor::OneMinusDestAlpha,
-                    dest_alpha_factor: BlendFactor::SrcAlpha,
-                    ..BlendState::default()
+                    color: BlendComponent {
+                        src_factor: BlendFactor::OneMinusDstAlpha,
+                        dst_factor: BlendFactor::SrcAlpha,
+                        operation: Default::default(),
+                    },
+                    alpha: BlendComponent {
+                        src_factor: BlendFactor::OneMinusDstAlpha,
+                        dst_factor: BlendFactor::SrcAlpha,
+                        operation: Default::default(),
+                    },
                 })
             }
             BlendMode::Xor => {
                 Some(BlendState {
-                    src_rgb_factor: BlendFactor::OneMinusDestAlpha,
-                    dest_rgb_factor: BlendFactor::OneMinusSrcAlpha,
-                    src_alpha_factor: BlendFactor::OneMinusDestAlpha,
-                    dest_alpha_factor: BlendFactor::OneMinusSrcAlpha,
-                    ..BlendState::default()
+                    color: BlendComponent {
+                        src_factor: BlendFactor::OneMinusDstAlpha,
+                        dst_factor: BlendFactor::OneMinusSrcAlpha,
+                        operation: Default::default(),
+                    },
+                    alpha: BlendComponent {
+                        src_factor: BlendFactor::OneMinusDstAlpha,
+                        dst_factor: BlendFactor::OneMinusSrcAlpha,
+                        operation: Default::default(),
+                    },
                 })
             }
             BlendMode::Lighter => {
                 Some(BlendState {
-                    src_rgb_factor: BlendFactor::One,
-                    dest_rgb_factor: BlendFactor::One,
-                    src_alpha_factor: BlendFactor::One,
-                    dest_alpha_factor: BlendFactor::One,
-                    ..BlendState::default()
+                    color: BlendComponent {
+                        src_factor: BlendFactor::One,
+                        dst_factor: BlendFactor::One,
+                        operation: Default::default(),
+                    },
+                    alpha: BlendComponent {
+                        src_factor: BlendFactor::One,
+                        dst_factor: BlendFactor::One,
+                        operation: Default::default(),
+                    },
                 })
             }
             BlendMode::Copy |

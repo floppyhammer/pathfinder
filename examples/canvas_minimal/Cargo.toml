@@ -5,7 +5,7 @@ authors = ["Patrick Walton <pcwalton@mimiga.net>"]
 edition = "2018"
 
 [dependencies]
-gl = "0.14"
+wgpu = "0.15.1"
 
 [dependencies.image]
 version = "0.23"
@@ -27,9 +27,6 @@ path = "../../content"
 
 [dependencies.pathfinder_geometry]
 path = "../../geometry"
-
-[dependencies.pathfinder_gl]
-path = "../../gl"
 
 [dependencies.pathfinder_gpu]
 path = "../../gpu"

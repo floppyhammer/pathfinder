@@ -309,21 +309,23 @@ impl<D> CopyTileVertexArray<D> where D: Device {
     }
 }
 
-pub(crate) struct FillProgramD3D9<D> where D: Device {
-    pub(crate) program: D::Program,
+pub(crate) struct FillProgramD3D9 {
+    pub(crate) module: wgpu::ShaderModule,
     pub(crate) framebuffer_size_uniform: D::Uniform,
     pub(crate) tile_size_uniform: D::Uniform,
     pub(crate) area_lut_texture: D::TextureParameter,
 }
 
-impl<D> FillProgramD3D9<D> where D: Device {
-    fn new(device: &D, resources: &dyn ResourceLoader) -> FillProgramD3D9<D> {
-        let program = device.create_raster_program(resources, "d3d9/fill");
+impl FillProgramD3D9 {
+    fn new(device: &wgpu::Device, resources: &dyn ResourceLoader) -> FillProgramD3D9 {
+        let module = device.create_shader_module(resources, "d3d9/fill");
+
         let framebuffer_size_uniform = device.get_uniform(&program, "FramebufferSize");
         let tile_size_uniform = device.get_uniform(&program, "TileSize");
         let area_lut_texture = device.get_texture_parameter(&program, "AreaLUT");
+
         FillProgramD3D9 {
-            program,
+            module,
             framebuffer_size_uniform,
             tile_size_uniform,
             area_lut_texture,
@@ -403,16 +405,16 @@ impl<D> CopyTileProgram<D> where D: Device {
     }
 }
 
-pub(crate) struct ProgramsD3D9<D> where D: Device {
-    pub(crate) fill_program: FillProgramD3D9<D>,
-    pub(crate) tile_program: TileProgramD3D9<D>,
-    pub(crate) tile_clip_copy_program: ClipTileCopyProgramD3D9<D>,
-    pub(crate) tile_clip_combine_program: ClipTileCombineProgramD3D9<D>,
-    pub(crate) tile_copy_program: CopyTileProgram<D>,
+pub(crate) struct ProgramsD3D9 {
+    pub(crate) fill_program: FillProgramD3D9,
+    pub(crate) tile_program: TileProgramD3D9,
+    pub(crate) tile_clip_copy_program: ClipTileCopyProgramD3D9,
+    pub(crate) tile_clip_combine_program: ClipTileCombineProgramD3D9,
+    pub(crate) tile_copy_program: CopyTileProgram,
 }
 
-impl<D> ProgramsD3D9<D> where D: Device {
-    pub(crate) fn new(device: &D, resources: &dyn ResourceLoader) -> ProgramsD3D9<D> {
+impl ProgramsD3D9 {
+    pub(crate) fn new(device: &wgpu::Device, resources: &dyn ResourceLoader) -> ProgramsD3D9 {
         ProgramsD3D9 {
             fill_program: FillProgramD3D9::new(device, resources),
             tile_program: TileProgramD3D9::new(device, resources),

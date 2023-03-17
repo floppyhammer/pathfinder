@@ -9,9 +9,9 @@ pf-gl = []
 
 [dependencies]
 clap = "2.32"
-gl = "0.14"
 rayon = "1.0"
 usvg = "0.20.0"
+wgpu = "0.15.1"
 
 [dependencies.image]
 version = "0.23"
@@ -32,9 +32,6 @@ path = "../../export"
 
 [dependencies.pathfinder_geometry]
 path = "../../geometry"
-
-[dependencies.pathfinder_gl]
-path = "../../gl"
 
 [dependencies.pathfinder_gpu]
 path = "../../gpu"
@@ -65,6 +62,3 @@ metal = "0.18"
 
 [target.'cfg(target_os = "macos")'.dependencies.io-surface]
 version = "0.12"
-
-[target.'cfg(target_os = "macos")'.dependencies.pathfinder_metal]
-path = "../../metal"
