@@ -1,9 +1,9 @@
 [package]
 name = "pathfinder_gpu"
-version = "0.5.0"
-edition = "2018"
-authors = ["Patrick Walton <pcwalton@mimiga.net>"]
-description = "A simple cross-platform GPU abstraction library"
+version = "0.6.0"
+edition = "2021"
+authors = ["Patrick Walton <pcwalton@mimiga.net>", "floppyhammer <tannhauser_chen@outlook.com>"]
+description = "A simple GPU memory management library"
 license = "MIT/Apache-2.0"
 repository = "https://github.com/servo/pathfinder"
 homepage = "https://github.com/servo/pathfinder"
@@ -13,6 +13,7 @@ bitflags = "1.0"
 fxhash = "0.2"
 half = "1.5"
 log = "0.4"
+wgpu = "0.15.1"
 
 [dependencies.image]
 version = "0.23"
