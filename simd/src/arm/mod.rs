@@ -12,24 +12,28 @@ use std::arch::aarch64::{self, float32x2_t, float32x4_t, int32x2_t, int32x4_t};
 use std::arch::aarch64::{uint32x2_t, uint32x4_t};
 use std::f32;
 use std::fmt::{self, Debug, Formatter};
+use std::intrinsics::simd::*;
 use std::mem;
 use std::ops::{Add, BitAnd, BitOr, Div, Index, IndexMut, Mul, Not, Shr, Sub};
 
 mod swizzle_f32x4;
 mod swizzle_i32x4;
 
+#[repr(simd)]
+pub(crate) struct Simd<T, const N: usize>([T; N]);
+
 macro_rules! simd_shuffle2 {
     ($x:expr, $y:expr, <$(const $imm:ident : $ty:ty),+> $idx:expr $(,)?) => {{
         struct ConstParam<$(const $imm: $ty),+>;
         impl<$(const $imm: $ty),+> ConstParam<$($imm),+> {
-            const IDX: [u32; 2] = $idx;
+            const IDX: Simd<u32, 2> = Simd($idx);
         }
 
-        simd_shuffle2($x, $y, ConstParam::<$($imm),+>::IDX)
+        simd_shuffle($x, $y, ConstParam::<$($imm),+>::IDX)
     }};
     ($x:expr, $y:expr, $idx:expr $(,)?) => {{
-        const IDX: [u32; 2] = $idx;
-        simd_shuffle2($x, $y, IDX)
+        const IDX: Simd<u32, 2>  = Simd($idx);
+        simd_shuffle($x, $y, IDX)
     }};
 }
 
@@ -37,14 +41,14 @@ macro_rules! simd_shuffle4 {
     ($x:expr, $y:expr, <$(const $imm:ident : $ty:ty),+> $idx:expr $(,)?) => {{
         struct ConstParam<$(const $imm: $ty),+>;
         impl<$(const $imm: $ty),+> ConstParam<$($imm),+> {
-            const IDX: [u32; 4] = $idx;
+            const IDX: Simd<u32; 4> = Simd($idx);
         }
 
-        simd_shuffle4($x, $y, ConstParam::<$($imm),+>::IDX)
+        simd_shuffle($x, $y, ConstParam::<$($imm),+>::IDX)
     }};
     ($x:expr, $y:expr, $idx:expr $(,)?) => {{
-        const IDX: [u32; 4] = $idx;
-        simd_shuffle4($x, $y, IDX)
+        const IDX: Simd<u32, 4> = Simd($idx);
+        simd_shuffle($x, $y, IDX)
     }};
 }
 
@@ -200,7 +204,6 @@ impl IndexMut<usize> for F32x2 {
     }
 }
 
-
 impl Add<F32x2> for F32x2 {
     type Output = F32x2;
     #[inline]
@@ -230,6 +233,13 @@ impl Sub<F32x2> for F32x2 {
     #[inline]
     fn sub(self, other: F32x2) -> F32x2 {
         unsafe { F32x2(simd_sub(self.0, other.0)) }
+    }
+}
+
+impl PartialEq for F32x2 {
+    #[inline]
+    fn eq(&self, other: &F32x2) -> bool {
+        self.packed_eq(*other).all_true()
     }
 }
 
@@ -344,7 +354,7 @@ impl F32x4 {
 
     #[inline]
     pub fn concat_xy_xy(self, other: F32x4) -> F32x4 {
-        unsafe { F32x4(simd_shuffle4!(self.0, other.0, [0, 1, 2, 3])) }
+        unsafe { F32x4(simd_shuffle4!(self.0, other.0, [0, 1, 4, 5])) }
     }
 
     #[inline]
@@ -355,6 +365,11 @@ impl F32x4 {
     #[inline]
     pub fn concat_zw_zw(self, other: F32x4) -> F32x4 {
         unsafe { F32x4(simd_shuffle4!(self.0, other.0, [2, 3, 6, 7])) }
+    }
+
+    #[inline]
+    pub fn concat_wz_yx(self, other: F32x4) -> F32x4 {
+        unsafe { F32x4(simd_shuffle4!(self.0, other.0, [3, 2, 5, 4])) }
     }
 
     // Conversions
@@ -824,13 +839,22 @@ impl BitOr<U32x2> for U32x2 {
     }
 }
 
-
 // Four 32-bit unsigned integers
 
 #[derive(Clone, Copy)]
 pub struct U32x4(pub uint32x4_t);
 
 impl U32x4 {
+    #[inline]
+    pub fn new(a: u32, b: u32, c: u32, d: u32) -> U32x4 {
+        unsafe { U32x4(mem::transmute([a, b, c, d])) }
+    }
+
+    #[inline]
+    pub fn splat(x: u32) -> U32x4 {
+        U32x4::new(x, x, x, x)
+    }
+
     /// Returns true if all four booleans in this vector are true.
     ///
     /// The result is *undefined* if all four values in this vector are not booleans. A boolean is
@@ -848,6 +872,20 @@ impl U32x4 {
     pub fn all_false(&self) -> bool {
         unsafe { aarch64::vmaxvq_u32(self.0) == 0 }
     }
+
+    // Packed comparisons
+
+    #[inline]
+    pub fn packed_eq(self, other: U32x4) -> U32x4 {
+        unsafe { U32x4(simd_eq(self.0, other.0)) }
+    }
+}
+
+impl Debug for U32x4 {
+    #[inline]
+    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+        write!(f, "<{}, {}, {}, {}>", self[0], self[1], self[2], self[3])
+    }
 }
 
 impl Index<usize> for U32x4 {
@@ -862,32 +900,11 @@ impl Index<usize> for U32x4 {
     }
 }
 
-// Intrinsics
-
-extern "platform-intrinsic" {
-    fn simd_add<T>(x: T, y: T) -> T;
-    fn simd_div<T>(x: T, y: T) -> T;
-    fn simd_mul<T>(x: T, y: T) -> T;
-    fn simd_sub<T>(x: T, y: T) -> T;
-
-    fn simd_shr<T>(x: T, y: T) -> T;
-
-    fn simd_and<T>(x: T, y: T) -> T;
-    fn simd_or<T>(x: T, y: T) -> T;
-    fn simd_xor<T>(x: T, y: T) -> T;
-
-    fn simd_fmin<T>(x: T, y: T) -> T;
-    fn simd_fmax<T>(x: T, y: T) -> T;
-
-    fn simd_eq<T, U>(x: T, y: T) -> U;
-    fn simd_gt<T, U>(x: T, y: T) -> U;
-    fn simd_le<T, U>(x: T, y: T) -> U;
-    fn simd_lt<T, U>(x: T, y: T) -> U;
-
-    fn simd_shuffle2<T, U>(x: T, y: T, idx: [u32; 2]) -> U;
-    fn simd_shuffle4<T, U>(x: T, y: T, idx: [u32; 4]) -> U;
-
-    fn simd_cast<T, U>(x: T) -> U;
+impl PartialEq for U32x4 {
+    #[inline]
+    fn eq(&self, other: &U32x4) -> bool {
+        self.packed_eq(*other).all_true()
+    }
 }
 
 extern "C" {

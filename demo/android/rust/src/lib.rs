@@ -13,12 +13,13 @@ extern crate lazy_static;
 
 use jni::objects::{GlobalRef, JByteBuffer, JClass, JObject, JString, JValue};
 use jni::{JNIEnv, JavaVM};
-use pathfinder_demo::window::{Event, DataPath, View, Window, WindowSize};
+use pathfinder_demo::window::{DataPath, Event, View, Window, WindowSize};
 use pathfinder_demo::DemoApp;
 use pathfinder_demo::Options;
 use pathfinder_geometry::vector::{Vector2I, vec2i};
 use pathfinder_geometry::rect::RectI;
-use pathfinder_gl::{GLVersion, GLDevice};
+use pathfinder_gl::GLVersion;
+use pathfinder_gl::GLDevice;
 use pathfinder_resources::ResourceLoader;
 use std::cell::RefCell;
 use std::io::Error as IOError;
@@ -202,7 +203,7 @@ impl Window for WindowImpl {
 
     fn make_current(&mut self, _view: View) {}
 
-    fn present(&mut self, device: &mut GLDevice) {}
+    fn present(&mut self, _device: &mut GLDevice) {}
 
     fn resource_loader(&self) -> &dyn ResourceLoader {
         &RESOURCE_LOADER

@@ -9,7 +9,7 @@ wasm-bindgen = "*"
 log = "0.4.8"
 
 [dependencies.image]
-version = "0.23"
+version = "0.25"
 default-features = false
 features = ["png"]
 
@@ -21,6 +21,7 @@ path = "../gpu"
 
 [dependencies.pathfinder_renderer]
 path = "../renderer"
+default-features = false
 
 [dependencies.pathfinder_simd]
 path = "../simd"
