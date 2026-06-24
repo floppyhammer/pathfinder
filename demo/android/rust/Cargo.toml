@@ -27,6 +27,3 @@ path = "../../../resources"
 
 [dependencies.pathfinder_gpu]
 path = "../../../gpu"
-
-[dependencies.pathfinder_resources]
-path = "../../../resources"
