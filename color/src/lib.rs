@@ -74,7 +74,7 @@ impl ColorU {
 
     #[inline]
     pub const fn is_opaque(&self) -> bool {
-        self.a == !0
+        self.a == 255
     }
 
     #[inline]
