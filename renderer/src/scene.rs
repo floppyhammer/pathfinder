@@ -347,12 +347,12 @@ impl Scene {
     }
 
     /// A convenience method to build a scene and accumulate commands into a vector.
-    pub fn build_into_vector<D, E>(&mut self,
-                                   renderer: &mut Renderer<D>,
+    pub fn build_into_vector<E>(&mut self,
+                                   renderer: &mut Renderer,
                                    build_options: BuildOptions,
                                    executor: E)
                                    -> Vec<RenderCommand>
-                                   where D: Device, E: Executor {
+                                   where E: Executor {
         let commands = Arc::new(Mutex::new(vec![]));
         let commands_for_listener = commands.clone();
         let listener = RenderCommandListener::new(Box::new(move |command| {
@@ -366,11 +366,11 @@ impl Scene {
 
     /// A convenience method to build a scene and send the resulting commands to the given
     /// renderer.
-    pub fn build_and_render<D, E>(&mut self,
-                                  renderer: &mut Renderer<D>,
+    pub fn build_and_render<E>(&mut self,
+                                  renderer: &mut Renderer,
                                   build_options: BuildOptions,
                                   executor: E)
-                                  where D: Device, E: Executor {
+                                  where E: Executor {
         let commands = self.build_into_vector(renderer, build_options, executor);
         renderer.begin_scene();
         commands.into_iter().for_each(|command| renderer.render_command(&command));

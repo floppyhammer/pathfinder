@@ -18,8 +18,6 @@ use pathfinder_demo::DemoApp;
 use pathfinder_demo::Options;
 use pathfinder_geometry::vector::{Vector2I, vec2i};
 use pathfinder_geometry::rect::RectI;
-use pathfinder_gl::GLVersion;
-use pathfinder_gl::GLDevice;
 use pathfinder_resources::ResourceLoader;
 use std::cell::RefCell;
 use std::io::Error as IOError;
@@ -52,7 +50,7 @@ pub unsafe extern "system" fn Java_graphics_pathfinder_pathfinderdemo_Pathfinder
     let logical_size = vec2i(width, height);
     let window_size = WindowSize {
         logical_size,
-        backing_scale_factor: 1.0,
+        scale_factor: 1.0,
     };
     let window = WindowImpl { size: logical_size };
     let options = Options::default();
@@ -121,7 +119,7 @@ pub unsafe extern "system" fn Java_graphics_pathfinder_pathfinderdemo_Pathfinder
         .unwrap()
         .push(Event::WindowResized(WindowSize {
             logical_size: vec2i(width, height),
-            backing_scale_factor: 1.0,
+            scale_factor: 1.0,
         }))
 }
 

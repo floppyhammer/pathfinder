@@ -13,19 +13,20 @@
 use pathfinder_color::ColorF;
 use pathfinder_geometry::rect::RectI;
 use pathfinder_geometry::vector::Vector2I;
-use pathfinder_gpu::{Device, FeatureLevel};
+use pathfinder_gpu::{Device, Texture};
 
 /// Renderer options that can't be changed after the renderer is created.
+#[derive(Clone)]
 pub struct RendererMode {
     /// The level of hardware features that the renderer will attempt to use.
     pub level: RendererLevel,
 }
 
 /// Options that influence rendering that can be changed at runtime.
-pub struct RendererOptions<D> where D: Device {
+pub struct RendererOptions {
     /// Where the rendering should go: either to the default framebuffer (i.e. screen) or to a
     /// custom framebuffer.
-    pub dest: DestFramebuffer<D>,
+    pub dest: DestFramebuffer,
     /// The background color. If not present, transparent is assumed.
     pub background_color: Option<ColorF>,
     /// Whether to display the debug UI.
@@ -48,14 +49,14 @@ pub enum RendererLevel {
 impl RendererMode {
     /// Creates a new `RendererMode` with a suitable API level for the given GPU device.
     #[inline]
-    pub fn default_for_device<D>(device: &D) -> RendererMode where D: Device {
-        RendererMode { level: RendererLevel::default_for_device(device) }
+    pub fn default_for_device(device: &Device) -> RendererMode {
+        RendererMode { level: RendererLevel::D3D9 }
     }
 }
 
-impl<D> Default for RendererOptions<D> where D: Device {
+impl Default for RendererOptions {
     #[inline]
-    fn default() -> RendererOptions<D> {
+    fn default() -> RendererOptions {
         RendererOptions {
             dest: DestFramebuffer::default(),
             background_color: None,
@@ -66,17 +67,14 @@ impl<D> Default for RendererOptions<D> where D: Device {
 
 impl RendererLevel {
     /// Returns a suitable renderer level for the given device.
-    pub fn default_for_device<D>(device: &D) -> RendererLevel where D: Device {
-        match device.feature_level() {
-            FeatureLevel::D3D10 => RendererLevel::D3D9,
-            FeatureLevel::D3D11 => RendererLevel::D3D11,
-        }
+    pub fn default_for_device(_device: &Device) -> RendererLevel {
+        RendererLevel::D3D9
     }
 }
 
 /// Where the rendered content should go.
 #[derive(Clone)]
-pub enum DestFramebuffer<D> where D: Device {
+pub enum DestFramebuffer {
     /// The rendered content should go to the default framebuffer (e.g. the window in OpenGL).
     Default {
         /// The rectangle within the window to draw in, in device pixels.
@@ -85,35 +83,33 @@ pub enum DestFramebuffer<D> where D: Device {
         window_size: Vector2I,
     },
     /// The rendered content should go to a non-default framebuffer (off-screen, typically).
-    Other(D::Framebuffer),
+    Other(Texture),
 }
 
-impl<D> Default for DestFramebuffer<D> where D: Device {
+impl Default for DestFramebuffer {
     #[inline]
-    fn default() -> DestFramebuffer<D> {
+    fn default() -> DestFramebuffer {
         DestFramebuffer::Default { viewport: RectI::default(), window_size: Vector2I::default() }
     }
 }
 
-impl<D> DestFramebuffer<D> where D: Device {
+impl DestFramebuffer {
     /// Returns a `DestFramebuffer` object that renders to the entire contents of the default
     /// framebuffer.
-    /// 
+    ///
     /// The `window_size` parameter specifies the size of the window in device pixels.
     #[inline]
-    pub fn full_window(window_size: Vector2I) -> DestFramebuffer<D> {
+    pub fn full_window(window_size: Vector2I) -> DestFramebuffer {
         let viewport = RectI::new(Vector2I::default(), window_size);
         DestFramebuffer::Default { viewport, window_size }
     }
 
     /// Returns the size of the destination buffer, in device pixels.
     #[inline]
-    pub fn window_size(&self, device: &D) -> Vector2I {
+    pub fn window_size(&self, _device: &Device) -> Vector2I {
         match *self {
             DestFramebuffer::Default { window_size, .. } => window_size,
-            DestFramebuffer::Other(ref framebuffer) => {
-                device.texture_size(device.framebuffer_texture(framebuffer))
-            }
+            DestFramebuffer::Other(ref texture) => texture.size,
         }
     }
 }

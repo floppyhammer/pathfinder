@@ -4,3 +4,23 @@
 
 textures/area-lut.png
 textures/gamma-lut.png
+shaders/blit.wgsl
+shaders/clear.wgsl
+shaders/stencil.wgsl
+shaders/reproject.wgsl
+shaders/demo_ground.wgsl
+shaders/d3d9/fill.wgsl
+shaders/d3d9/tile.wgsl
+shaders/d3d9/tile_clip_copy.wgsl
+shaders/d3d9/tile_clip_combine.wgsl
+shaders/d3d9/tile_copy.wgsl
+shaders/d3d11/bound.wgsl
+shaders/d3d11/dice.wgsl
+shaders/d3d11/bin.wgsl
+shaders/d3d11/propagate.wgsl
+shaders/d3d11/sort.wgsl
+shaders/d3d11/fill.wgsl
+shaders/d3d11/tile.wgsl
+shaders/debug/texture.wgsl
+shaders/debug/solid.wgsl
+svg/Ghostscript_Tiger.svg

@@ -445,9 +445,9 @@ impl BuiltPath {
                                 tile_y: tile_coord.y() as i16,
                                 alpha_tile_id: AlphaTileId(!0),
                                 path_id,
-                                color: paint_id.0,
                                 backdrop: 0,
                                 ctrl: ctrl_byte,
+                                metadata_id: paint_id.0,
                             }
                         }, tile_bounds),
                     clip_tiles: match *tiling_path_info {
@@ -701,7 +701,7 @@ impl TileBatchDataD3D11 {
         };
         let segment_range = &segment_ranges[global_path_id.0 as usize];
         self.prepare_info.dice_metadata.push(DiceMetadataD3D11 {
-            first_batch_segment_index: self.segment_count, 
+            first_batch_segment_index: self.segment_count,
             first_global_segment_index: segment_range.start,
             global_path_id,
             pad: 0,
@@ -878,7 +878,7 @@ impl TileBatchBuilder {
                 #[cfg(feature="d3d9")]
                 Some(built_paths) => TileBatchBuilderLevel::D3D9 { built_paths },
                 #[allow(unreachable_patterns)]
-                _ => unreachable!()
+                _ => unreachable!("Neither d3d9 nor d3d11 feature is enabled"),
             },
         }
     }

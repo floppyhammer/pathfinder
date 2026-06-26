@@ -11,7 +11,7 @@
 //! Performance monitoring infrastructure.
 
 use crate::gpu::options::RendererOptions;
-use pathfinder_gpu::Device;
+use pathfinder_gpu::{Device, TimerQuery};
 use std::mem;
 use std::ops::{Add, Div};
 use std::time::Duration;
@@ -75,20 +75,20 @@ impl Div<usize> for RenderStats {
     }
 }
 
-pub(crate) struct TimerQueryCache<D> where D: Device {
-    free_queries: Vec<D::TimerQuery>,
+pub(crate) struct TimerQueryCache {
+    free_queries: Vec<TimerQuery>,
 }
 
-pub(crate) struct PendingTimer<D> where D: Device {
-    pub(crate) dice_times: Vec<TimerFuture<D>>,
-    pub(crate) bin_times: Vec<TimerFuture<D>>,
-    pub(crate) fill_times: Vec<TimerFuture<D>>,
-    pub(crate) composite_times: Vec<TimerFuture<D>>,
-    pub(crate) other_times: Vec<TimerFuture<D>>,
+pub(crate) struct PendingTimer {
+    pub(crate) dice_times: Vec<TimerFuture>,
+    pub(crate) bin_times: Vec<TimerFuture>,
+    pub(crate) fill_times: Vec<TimerFuture>,
+    pub(crate) composite_times: Vec<TimerFuture>,
+    pub(crate) other_times: Vec<TimerFuture>,
 }
 
-pub(crate) enum TimerFuture<D> where D: Device {
-    Pending(D::TimerQuery),
+pub(crate) enum TimerFuture {
+    Pending(TimerQuery),
     Resolved(Duration),
 }
 
@@ -101,33 +101,33 @@ pub(crate) enum TimeCategory {
     Other,
 }
 
-impl<D> TimerQueryCache<D> where D: Device {
-    pub(crate) fn new() -> TimerQueryCache<D> {
+impl TimerQueryCache {
+    pub(crate) fn new() -> TimerQueryCache {
         TimerQueryCache { free_queries: vec![] }
     }
 
-    pub(crate) fn alloc(&mut self, device: &D) -> D::TimerQuery {
+    pub(crate) fn alloc(&mut self, device: &Device) -> TimerQuery {
         self.free_queries.pop().unwrap_or_else(|| device.create_timer_query())
     }
 
-    pub(crate) fn free(&mut self, old_query: D::TimerQuery) {
+    pub(crate) fn free(&mut self, old_query: TimerQuery) {
         self.free_queries.push(old_query);
     }
 
-    pub(crate) fn start_timing_draw_call(&mut self, device: &D, options: &RendererOptions<D>)
-                                         -> Option<D::TimerQuery> {
+    pub(crate) fn start_timing_draw_call(&mut self, device: &Device, options: &RendererOptions)
+                                         -> Option<TimerQuery> {
         if !options.show_debug_ui {
             return None;
         }
 
-        let timer_query = self.alloc(device);
-        device.begin_timer_query(&timer_query);
+        let mut timer_query = self.alloc(device);
+        device.begin_timer_query(&mut timer_query);
         Some(timer_query)
     }
 }
 
-impl<D> PendingTimer<D> where D: Device {
-    pub(crate) fn new() -> PendingTimer<D> {
+impl PendingTimer {
+    pub(crate) fn new() -> PendingTimer {
         PendingTimer {
             dice_times: vec![],
             bin_times: vec![],
@@ -137,7 +137,7 @@ impl<D> PendingTimer<D> where D: Device {
         }
     }
 
-    pub(crate) fn poll(&mut self, device: &D) -> Vec<D::TimerQuery> {
+    pub(crate) fn poll(&mut self, device: &Device) -> Vec<TimerQuery> {
         let mut old_queries = vec![];
         for future in self.dice_times.iter_mut().chain(self.bin_times.iter_mut())
                                                 .chain(self.fill_times.iter_mut())
@@ -151,26 +151,17 @@ impl<D> PendingTimer<D> where D: Device {
     }
 
     pub(crate) fn total_time(&self) -> Option<RenderTime> {
-        let dice_time = total_time_of_timer_futures(&self.dice_times);
-        let bin_time = total_time_of_timer_futures(&self.bin_times);
-        let fill_time = total_time_of_timer_futures(&self.fill_times);
-        let composite_time = total_time_of_timer_futures(&self.composite_times);
-        let other_time = total_time_of_timer_futures(&self.other_times);
-        match (dice_time, bin_time, fill_time, composite_time, other_time) {
-            (Some(dice_time),
-             Some(bin_time),
-             Some(fill_time),
-             Some(composite_time),
-             Some(other_time)) => {
-                Some(RenderTime { dice_time, bin_time, fill_time, composite_time, other_time })
-            }
-            _ => None,
-        }
+        let dice_time = total_time_of_timer_futures(&self.dice_times).unwrap_or(Duration::ZERO);
+        let bin_time = total_time_of_timer_futures(&self.bin_times).unwrap_or(Duration::ZERO);
+        let fill_time = total_time_of_timer_futures(&self.fill_times).unwrap_or(Duration::ZERO);
+        let composite_time = total_time_of_timer_futures(&self.composite_times).unwrap_or(Duration::ZERO);
+        let other_time = total_time_of_timer_futures(&self.other_times).unwrap_or(Duration::ZERO);
+        Some(RenderTime { dice_time, bin_time, fill_time, composite_time, other_time })
     }
 
     pub(crate) fn push_query(&mut self,
                              time_category: TimeCategory,
-                             timer_query: Option<D::TimerQuery>) {
+                             timer_query: Option<TimerQuery>) {
         let timer_future = match timer_query {
             None => return,
             Some(timer_query) => TimerFuture::new(timer_query),
@@ -185,12 +176,12 @@ impl<D> PendingTimer<D> where D: Device {
     }
 }
 
-impl<D> TimerFuture<D> where D: Device {
-    pub(crate) fn new(query: D::TimerQuery) -> TimerFuture<D> {
+impl TimerFuture {
+    pub(crate) fn new(query: TimerQuery) -> TimerFuture {
         TimerFuture::Pending(query)
     }
 
-    fn poll(&mut self, device: &D) -> Option<D::TimerQuery> {
+    fn poll(&mut self, device: &Device) -> Option<TimerQuery> {
         let duration = match *self {
             TimerFuture::Pending(ref query) => device.try_recv_timer_query(query),
             TimerFuture::Resolved(_) => None,
@@ -207,7 +198,7 @@ impl<D> TimerFuture<D> where D: Device {
     }
 }
 
-fn total_time_of_timer_futures<D>(futures: &[TimerFuture<D>]) -> Option<Duration> where D: Device {
+fn total_time_of_timer_futures(futures: &[TimerFuture]) -> Option<Duration> {
     let mut total = Duration::default();
     for future in futures {
         match *future {

@@ -91,7 +91,7 @@ impl SceneProxy {
 
     /// Sends all queued commands to the given renderer to render the wrapped scene.
     #[inline]
-    pub fn render<D>(&mut self, renderer: &mut Renderer<D>) where D: Device {
+    pub fn render(&mut self, renderer: &mut Renderer) {
         renderer.begin_scene();
         while let Ok(command) = self.receiver.recv() {
             renderer.render_command(&command);
@@ -113,8 +113,7 @@ impl SceneProxy {
     /// scene_proxy.render(renderer);
     /// ```
     #[inline]
-    pub fn build_and_render<D>(&mut self, renderer: &mut Renderer<D>, build_options: BuildOptions)
-                               where D: Device {
+    pub fn build_and_render(&mut self, renderer: &mut Renderer, build_options: BuildOptions) {
         self.build(build_options);
         self.render(renderer);
     }

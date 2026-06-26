@@ -5,15 +5,15 @@ edition = "2018"
 authors = ["Patrick Walton <pcwalton@mimiga.net>"]
 
 [features]
-pf-gl = ["pathfinder_demo/pf-gl"]
 pf-no-simd = ["pathfinder_simd/pf-no-simd"]
 
 [dependencies]
 color-backtrace = "0.3"
-gl = "0.14"
 lazy_static = "1"
 nfd = "0.0.4"
 pretty_env_logger = "0.4"
+wgpu = { version = "29.0.3" }
+pollster = "0.3"
 
 [dependencies.euclid]
 version = "0.20"
@@ -25,9 +25,6 @@ path = "../common"
 [dependencies.pathfinder_geometry]
 path = "../../geometry"
 
-[dependencies.pathfinder_gl]
-path = "../../gl"
-
 [dependencies.pathfinder_gpu]
 path = "../../gpu"
 
@@ -37,22 +34,13 @@ path = "../../resources"
 [dependencies.pathfinder_simd]
 path = "../../simd"
 
-[dependencies.surfman]
-git = "https://github.com/servo/surfman"
-rev = "f3df871ac8c3926fe9106d86a3e51e20aa50d3cc"
-features = ["sm-winit", "sm-x11"]
-
 [dependencies.winit]
-version = "<0.19.4" # 0.19.4 causes build errors https://github.com/rust-windowing/winit/pull/1105
+version = "0.29"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 foreign-types = "0.3"
 io-surface = "0.12"
-metal = "0.18"
 objc = "0.2"
-
-[target.'cfg(target_os = "macos")'.dependencies.pathfinder_metal]
-path = "../../metal"
 
 [target.'cfg(not(windows))'.dependencies]
 jemallocator = "0.3"

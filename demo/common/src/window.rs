@@ -1,6 +1,6 @@
 // pathfinder/demo/common/src/window.rs
 //
-// Copyright © 2019 The Pathfinder Project Developers.
+// Copyright © 2026 The Pathfinder Project Developers.
 //
 // Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
 // http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -13,36 +13,23 @@
 use pathfinder_geometry::rect::RectI;
 use pathfinder_geometry::transform3d::{Perspective, Transform4F};
 use pathfinder_geometry::vector::Vector2I;
+use pathfinder_gpu::{Device, Texture};
 use pathfinder_resources::ResourceLoader;
 use rayon::ThreadPoolBuilder;
+use std::ops::Deref;
 use std::path::PathBuf;
-
-#[cfg(all(target_os = "macos", not(feature = "pf-gl")))]
-use io_surface::IOSurfaceRef;
-#[cfg(all(target_os = "macos", not(feature = "pf-gl")))]
-use metal::Device as MetalDevice;
-#[cfg(all(target_os = "macos", not(feature = "pf-gl")))]
-use pathfinder_metal::MetalDevice as PathfinderMetalDevice;
-
-#[cfg(any(not(target_os = "macos"), feature = "pf-gl"))]
-use gl::types::GLuint;
-#[cfg(any(not(target_os = "macos"), feature = "pf-gl"))]
-use pathfinder_gl::{GLDevice, GLVersion};
+use wgpu;
 
 pub trait Window {
-    #[cfg(any(not(target_os = "macos"), feature = "pf-gl"))]
-    fn gl_version(&self) -> GLVersion;
-    #[cfg(any(not(target_os = "macos"), feature = "pf-gl"))]
-    fn gl_default_framebuffer(&self) -> GLuint { 0 }
-    #[cfg(any(not(target_os = "macos"), feature = "pf-gl"))]
-    fn present(&mut self, device: &mut GLDevice);
+    fn device(&self) -> &Device;
+    fn present(&mut self);
+    /// Present the given texture to the screen surface.
+    /// This method should blit the texture to the swapchain and call surface.present().
+    fn present_texture(&mut self, texture: &Texture);
 
-    #[cfg(all(target_os = "macos", not(feature = "pf-gl")))]
-    fn metal_device(&self) -> MetalDevice;
-    #[cfg(all(target_os = "macos", not(feature = "pf-gl")))]
-    fn metal_io_surface(&self) -> IOSurfaceRef;
-    #[cfg(all(target_os = "macos", not(feature = "pf-gl")))]
-    fn present(&mut self, device: &mut PathfinderMetalDevice);
+    /// Get the current surface texture for rendering.
+    /// Returns the surface texture, its view, and the size.
+    fn get_current_surface(&mut self) -> Option<SurfaceTextureHandle>;
 
     fn make_current(&mut self, view: View);
     fn viewport(&self, view: View) -> RectI;
@@ -57,12 +44,58 @@ pub trait Window {
     }
 }
 
+/// Handle for the current surface texture.
+/// Implementors should ensure the texture is presented when dropped.
+pub struct SurfaceTextureHandle {
+    surface_texture: Option<wgpu::SurfaceTexture>,
+    view: wgpu::TextureView,
+    size: Vector2I,
+}
+
+impl SurfaceTextureHandle {
+    pub fn new(surface_texture: wgpu::SurfaceTexture, size: Vector2I) -> Self {
+        let view = surface_texture
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        SurfaceTextureHandle {
+            surface_texture: Some(surface_texture),
+            view,
+            size,
+        }
+    }
+
+    pub fn view(&self) -> &wgpu::TextureView {
+        &self.view
+    }
+
+    pub fn size(&self) -> Vector2I {
+        self.size
+    }
+}
+
+impl Deref for SurfaceTextureHandle {
+    type Target = wgpu::SurfaceTexture;
+
+    fn deref(&self) -> &Self::Target {
+        self.surface_texture.as_ref().unwrap()
+    }
+}
+
+impl Drop for SurfaceTextureHandle {
+    fn drop(&mut self) {
+        if let Some(st) = self.surface_texture.take() {
+            st.present();
+        }
+    }
+}
+
 pub enum Event {
     Quit,
     WindowResized(WindowSize),
     KeyDown(Keycode),
     KeyUp(Keycode),
     MouseDown(Vector2I),
+    MouseUp,
     MouseMoved(Vector2I),
     MouseDragged(Vector2I),
     Zoom(f32, Vector2I),
@@ -87,14 +120,19 @@ pub enum Keycode {
 
 #[derive(Clone, Copy, Debug)]
 pub struct WindowSize {
-    pub logical_size: Vector2I,
-    pub backing_scale_factor: f32,
+    pub physical_size: Vector2I,
+    pub scale_factor: f32,
 }
 
 impl WindowSize {
     #[inline]
     pub fn device_size(&self) -> Vector2I {
-        (self.logical_size.to_f32() * self.backing_scale_factor).to_i32()
+        self.physical_size.to_f32().to_i32()
+    }
+
+    #[inline]
+    pub fn logical_size(&self) -> Vector2I {
+        (self.physical_size.to_f32() / self.scale_factor).to_i32()
     }
 }
 

@@ -22,7 +22,6 @@ use pathfinder_geometry::rect::{RectF, RectI};
 use pathfinder_geometry::transform2d::{Matrix2x2F, Transform2F};
 use pathfinder_geometry::transform3d::{Perspective, Transform4F};
 use pathfinder_geometry::vector::{Vector2F, Vector2I};
-use pathfinder_gl::{GLDevice, GLVersion};
 use pathfinder_gpu::Device;
 use pathfinder_resources::ResourceLoader;
 use pathfinder_resources::fs::FilesystemResourceLoader;
@@ -952,7 +951,7 @@ impl PFRendererMode {
 }
 
 impl PFRendererOptions {
-    pub fn to_rust<D>(&self) -> RendererOptions<D> where D: Device {
+    pub fn to_rust(&self) -> RendererOptions {
         let has_background_color = self.flags & PF_RENDERER_OPTIONS_FLAGS_HAS_BACKGROUND_COLOR;
         let show_debug_ui = (self.flags & PF_RENDERER_OPTIONS_FLAGS_SHOW_DEBUG_UI) != 0;
         unsafe {
@@ -962,7 +961,7 @@ impl PFRendererOptions {
                 } else {
                     None
                 },
-                dest: *Box::from_raw(self.dest as *mut DestFramebuffer<D>),
+                dest: *Box::from_raw(self.dest as *mut DestFramebuffer),
                 show_debug_ui,
             }
         }

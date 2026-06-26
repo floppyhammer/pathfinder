@@ -13,4 +13,3 @@
 //! This renderer supports OpenGL at least 4.3, OpenGL ES at least 3.1, and Metal of any version.
 
 pub mod renderer;
-pub mod shaders;

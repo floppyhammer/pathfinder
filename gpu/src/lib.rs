@@ -1,6 +1,6 @@
 // pathfinder/gpu/src/lib.rs
 //
-// Copyright © 2019 The Pathfinder Project Developers.
+// Copyright © 2024 The Pathfinder Project Developers.
 //
 // Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
 // http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -8,7 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-//! Minimal abstractions over GPU device capabilities.
+//! Concrete GPU abstractions based on wgpu.
 
 #[macro_use]
 extern crate bitflags;
@@ -22,427 +22,2134 @@ use image::ImageFormat;
 use pathfinder_color::ColorF;
 use pathfinder_geometry::rect::RectI;
 use pathfinder_geometry::transform3d::Transform4F;
-use pathfinder_geometry::vector::{Vector2I, vec2i};
+use pathfinder_geometry::vector::{vec2i, Vector2I};
 use pathfinder_resources::ResourceLoader;
 use pathfinder_simd::default::{F32x2, F32x4, I32x2};
-use std::ops::Range;
-use std::os::raw::c_void;
+use std::cell::RefCell;
+use std::sync::Arc;
 use std::time::Duration;
+use wgpu::util::DeviceExt;
 
-pub trait Device: Sized {
-    type Buffer;
-    type BufferDataReceiver;
-    type Fence;
-    type Framebuffer;
-    type ImageParameter;
-    type Program;
-    type Shader;
-    type StorageBuffer;
-    type Texture;
-    type TextureParameter;
-    type TextureDataReceiver;
-    type TimerQuery;
-    type Uniform;
-    type VertexArray;
-    type VertexAttr;
+#[derive(Clone)]
+pub struct Device {
+    pub device: Arc<wgpu::Device>,
+    pub queue: Arc<wgpu::Queue>,
+    pub device_name: String,
+    pub backend_name: String,
+    pub(crate) encoder: Arc<RefCell<Option<wgpu::CommandEncoder>>>,
+}
 
-    fn backend_name(&self) -> &'static str;
-    fn device_name(&self) -> String;
-    fn feature_level(&self) -> FeatureLevel;
-    fn create_texture(&self, format: TextureFormat, size: Vector2I) -> Self::Texture;
-    fn create_texture_from_data(&self, format: TextureFormat, size: Vector2I, data: TextureDataRef)
-                                -> Self::Texture;
-    fn create_shader(&self, resources: &dyn ResourceLoader, name: &str, kind: ShaderKind)
-                     -> Self::Shader;
-    fn create_shader_from_source(&self, name: &str, source: &[u8], kind: ShaderKind)
-                                 -> Self::Shader;
-    fn create_vertex_array(&self) -> Self::VertexArray;
-    fn create_program_from_shaders(&self,
-                                   resources: &dyn ResourceLoader,
-                                   name: &str,
-                                   shaders: ProgramKind<Self::Shader>)
-                                   -> Self::Program;
-    fn set_compute_program_local_size(&self,
-                                      program: &mut Self::Program,
-                                      local_size: ComputeDimensions);
-    fn get_vertex_attr(&self, program: &Self::Program, name: &str) -> Option<Self::VertexAttr>;
-    fn get_uniform(&self, program: &Self::Program, name: &str) -> Self::Uniform;
-    fn get_texture_parameter(&self, program: &Self::Program, name: &str) -> Self::TextureParameter;
-    fn get_image_parameter(&self, program: &Self::Program, name: &str) -> Self::ImageParameter;
-    fn get_storage_buffer(&self, program: &Self::Program, name: &str, binding: u32)
-                          -> Self::StorageBuffer;
-    fn bind_buffer(&self,
-                   vertex_array: &Self::VertexArray,
-                   buffer: &Self::Buffer,
-                   target: BufferTarget);
-    fn configure_vertex_attr(&self,
-                             vertex_array: &Self::VertexArray,
-                             attr: &Self::VertexAttr,
-                             descriptor: &VertexAttrDescriptor);
-    fn create_framebuffer(&self, texture: Self::Texture) -> Self::Framebuffer;
-    fn create_buffer(&self, mode: BufferUploadMode) -> Self::Buffer;
-    fn allocate_buffer<T>(&self,
-                          buffer: &Self::Buffer,
-                          data: BufferData<T>,
-                          target: BufferTarget);
-    fn upload_to_buffer<T>(&self,
-                           buffer: &Self::Buffer,
-                           position: usize,
-                           data: &[T],
-                           target: BufferTarget);
-    fn framebuffer_texture<'f>(&self, framebuffer: &'f Self::Framebuffer) -> &'f Self::Texture;
-    fn destroy_framebuffer(&self, framebuffer: Self::Framebuffer) -> Self::Texture;
-    fn texture_format(&self, texture: &Self::Texture) -> TextureFormat;
-    fn texture_size(&self, texture: &Self::Texture) -> Vector2I;
-    fn set_texture_sampling_mode(&self, texture: &Self::Texture, flags: TextureSamplingFlags);
-    fn upload_to_texture(&self, texture: &Self::Texture, rect: RectI, data: TextureDataRef);
-    fn read_pixels(&self, target: &RenderTarget<Self>, viewport: RectI)
-                   -> Self::TextureDataReceiver;
-    fn read_buffer(&self, buffer: &Self::Buffer, target: BufferTarget, range: Range<usize>)
-                   -> Self::BufferDataReceiver;
-    fn begin_commands(&self);
-    fn end_commands(&self);
-    fn draw_arrays(&self, index_count: u32, render_state: &RenderState<Self>);
-    fn draw_elements(&self, index_count: u32, render_state: &RenderState<Self>);
-    fn draw_elements_instanced(&self,
-                               index_count: u32,
-                               instance_count: u32,
-                               render_state: &RenderState<Self>);
-    fn dispatch_compute(&self, dimensions: ComputeDimensions, state: &ComputeState<Self>);
-    fn add_fence(&self) -> Self::Fence;
-    fn wait_for_fence(&self, fence: &Self::Fence);
-    fn create_timer_query(&self) -> Self::TimerQuery;
-    fn begin_timer_query(&self, query: &Self::TimerQuery);
-    fn end_timer_query(&self, query: &Self::TimerQuery);
-    fn try_recv_timer_query(&self, query: &Self::TimerQuery) -> Option<Duration>;
-    fn recv_timer_query(&self, query: &Self::TimerQuery) -> Duration;
-    fn try_recv_texture_data(&self, receiver: &Self::TextureDataReceiver) -> Option<TextureData>;
-    fn recv_texture_data(&self, receiver: &Self::TextureDataReceiver) -> TextureData;
-    fn try_recv_buffer(&self, receiver: &Self::BufferDataReceiver) -> Option<Vec<u8>>;
-    fn recv_buffer(&self, receiver: &Self::BufferDataReceiver) -> Vec<u8>;
+pub struct TimerQuery {
+    start_time: Option<std::time::Instant>,
+    end_time: Option<std::time::Instant>,
+}
 
-    fn create_texture_from_png(&self,
-                               resources: &dyn ResourceLoader,
-                               name: &str,
-                               format: TextureFormat)
-                               -> Self::Texture {
-        let data = resources.slurp(&format!("textures/{}.png", name)).unwrap();
-        let image = image::load_from_memory_with_format(&data, ImageFormat::Png).unwrap();
-        match format {
-            TextureFormat::R8 => {
-                let image = image.to_luma8();
-                let size = vec2i(image.width() as i32, image.height() as i32);
-                self.create_texture_from_data(format, size, TextureDataRef::U8(&image))
-            }
-            TextureFormat::RGBA8 => {
-                let image = image.to_rgba8();
-                let size = vec2i(image.width() as i32, image.height() as i32);
-                self.create_texture_from_data(format, size, TextureDataRef::U8(&image))
-            }
-            _ => unimplemented!(),
+impl TimerQuery {
+    fn new() -> TimerQuery {
+        TimerQuery {
+            start_time: None,
+            end_time: None,
         }
     }
 
-    fn upload_png_to_texture(&self,
-                             resources: &dyn ResourceLoader,
-                             name: &str,
-                             texture: &Self::Texture,
-                             format: TextureFormat) {
-        let data = resources.slurp(&format!("textures/{}.png", name)).unwrap();
-        let image = image::load_from_memory_with_format(&data, ImageFormat::Png).unwrap();
-        match format {
-            TextureFormat::R8 => {
-                let image = image.to_luma8();
-                let size = vec2i(image.width() as i32, image.height() as i32);
-                let rect = RectI::new(Vector2I::default(), size);
-                self.upload_to_texture(&texture, rect, TextureDataRef::U8(&image))
-            }
-            TextureFormat::RGBA8 => {
-                let image = image.to_rgba8();
-                let size = vec2i(image.width() as i32, image.height() as i32);
-                let rect = RectI::new(Vector2I::default(), size);
-                self.upload_to_texture(&texture, rect, TextureDataRef::U8(&image))
-            }
-            _ => unimplemented!(),
+    fn begin(&mut self) {
+        self.start_time = Some(std::time::Instant::now());
+    }
+
+    fn end(&mut self) {
+        self.end_time = Some(std::time::Instant::now());
+    }
+
+    fn elapsed(&self) -> Option<Duration> {
+        match (self.start_time, self.end_time) {
+            (Some(start), Some(end)) => Some(end - start),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct Texture {
+    pub texture: wgpu::Texture,
+    pub view: wgpu::TextureView,
+    pub size: Vector2I,
+    pub format: wgpu::TextureFormat,
+}
+
+impl Texture {
+    pub fn create_view(&self, desc: &wgpu::TextureViewDescriptor) -> wgpu::TextureView {
+        self.texture.create_view(desc)
+    }
+
+    pub fn create_default_view(&self) -> wgpu::TextureView {
+        self.texture
+            .create_view(&wgpu::TextureViewDescriptor::default())
+    }
+}
+
+pub enum RenderTarget<'a> {
+    Default,
+    Framebuffer(&'a wgpu::TextureView),
+}
+
+impl Device {
+    pub fn new(
+        device: Arc<wgpu::Device>,
+        queue: Arc<wgpu::Queue>,
+        device_name: String,
+        backend_name: String,
+    ) -> Device {
+        Device {
+            device,
+            queue,
+            device_name,
+            backend_name,
+            encoder: Arc::new(RefCell::new(None)),
         }
     }
 
-    fn create_program_from_shader_names(
+    pub fn backend_name(&self) -> &str {
+        &self.backend_name
+    }
+
+    pub fn create_texture(
+        &self,
+        format: wgpu::TextureFormat,
+        size: Vector2I,
+        usage: wgpu::TextureUsages,
+    ) -> Texture {
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: size.x() as u32,
+                height: size.y() as u32,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        Texture {
+            texture,
+            view,
+            size,
+            format,
+        }
+    }
+
+    pub fn upload_png_to_texture(
         &self,
         resources: &dyn ResourceLoader,
-        program_name: &str,
-        shader_names: ProgramKind<&str>,
-    ) -> Self::Program {
-        let shaders = match shader_names {
-            ProgramKind::Raster { vertex, fragment } => {
-                ProgramKind::Raster {
-                    vertex: self.create_shader(resources, vertex, ShaderKind::Vertex),
-                    fragment: self.create_shader(resources, fragment, ShaderKind::Fragment),
+        name: &str,
+        texture: &Texture,
+    ) {
+        let data = resources.slurp(&format!("textures/{}.png", name)).unwrap();
+        let image = image::load_from_memory_with_format(&data, ImageFormat::Png).unwrap();
+        let format = texture.format;
+        match format {
+            wgpu::TextureFormat::R8Unorm => {
+                let image = image.to_luma8();
+                let size = vec2i(image.width() as i32, image.height() as i32);
+                let rect = RectI::new(Vector2I::default(), size);
+                self.upload_to_texture(&texture, rect, TextureDataRef::U8(&image))
+            }
+            wgpu::TextureFormat::Rgba8Unorm => {
+                let image = image.to_rgba8();
+                let size = vec2i(image.width() as i32, image.height() as i32);
+                let rect = RectI::new(Vector2I::default(), size);
+                self.upload_to_texture(&texture, rect, TextureDataRef::U8(&image))
+            }
+            _ => unimplemented!(),
+        }
+    }
+
+    pub fn upload_to_buffer<T>(&self, buffer: &wgpu::Buffer, position: usize, data: &[T]) {
+        let bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(
+                data.as_ptr() as *const u8,
+                data.len() * std::mem::size_of::<T>(),
+            )
+        };
+        self.queue.write_buffer(buffer, position as u64, bytes);
+    }
+
+    pub fn create_buffer(&self, size: u64, usage: wgpu::BufferUsages) -> wgpu::Buffer {
+        self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size,
+            usage,
+            mapped_at_creation: false,
+        })
+    }
+
+    pub fn create_buffer_with_data<T: bytemuck::Pod>(
+        &self,
+        data: &[T],
+        usage: wgpu::BufferUsages,
+    ) -> wgpu::Buffer {
+        self.device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: None,
+                contents: bytemuck::cast_slice(data),
+                usage,
+            })
+    }
+
+    pub fn texture_size(&self, texture: &Texture) -> Vector2I {
+        texture.size
+    }
+
+    pub fn upload_to_texture(&self, texture: &Texture, rect: RectI, data: TextureDataRef) {
+        let bytes = match data {
+            TextureDataRef::U8(d) => d,
+            TextureDataRef::F16(d) => unsafe {
+                std::slice::from_raw_parts(d.as_ptr() as *const u8, d.len() * 2)
+            },
+            TextureDataRef::F32(d) => unsafe {
+                std::slice::from_raw_parts(d.as_ptr() as *const u8, d.len() * 4)
+            },
+        };
+
+        let block_size = texture.format.block_copy_size(None).unwrap_or(4);
+
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: rect.origin().x() as u32,
+                    y: rect.origin().y() as u32,
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            bytes,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(rect.size().x() as u32 * block_size),
+                rows_per_image: Some(rect.size().y() as u32),
+            },
+            wgpu::Extent3d {
+                width: rect.size().x() as u32,
+                height: rect.size().y() as u32,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+
+    pub fn begin_commands(&self) {
+        let mut encoder = self.encoder.borrow_mut();
+        if encoder.is_none() {
+            *encoder = Some(
+                self.device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None }),
+            );
+        }
+    }
+
+    pub fn end_commands(&self) {
+        let mut encoder = self.encoder.borrow_mut();
+        if let Some(e) = encoder.take() {
+            self.queue.submit(std::iter::once(e.finish()));
+        }
+    }
+
+    pub fn draw_instanced(
+        &self,
+        target: &RenderTarget,
+        pipeline: &wgpu::RenderPipeline,
+        bind_groups: &[wgpu::BindGroup],
+        vertex_buffers: &[(&wgpu::Buffer, u64)],
+        index_buffer: Option<(&wgpu::Buffer, u64, wgpu::IndexFormat)>,
+        count: u32,
+        instances: u32,
+        clear_color: Option<ColorF>,
+    ) {
+        let mut encoder_borrow = self.encoder.borrow_mut();
+        if encoder_borrow.is_none() {
+            *encoder_borrow = Some(
+                self.device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None }),
+            );
+        }
+        let encoder = encoder_borrow.as_mut().unwrap();
+
+        let view = match target {
+            RenderTarget::Framebuffer(v) => v,
+            RenderTarget::Default => panic!("Default target not supported"),
+        };
+
+        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: None,
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: match clear_color {
+                        Some(c) => wgpu::LoadOp::Clear(wgpu::Color {
+                            r: c.r() as f64,
+                            g: c.g() as f64,
+                            b: c.b() as f64,
+                            a: c.a() as f64,
+                        }),
+                        None => wgpu::LoadOp::Load,
+                    },
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: None, // TODO: Support depth
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+
+        render_pass.set_pipeline(pipeline);
+        for (i, bg) in bind_groups.iter().enumerate() {
+            render_pass.set_bind_group(i as u32, bg, &[]);
+        }
+
+        for (i, (buffer, offset)) in vertex_buffers.iter().enumerate() {
+            render_pass.set_vertex_buffer(i as u32, buffer.slice(*offset..));
+        }
+
+        if let Some((buffer, offset, format)) = index_buffer {
+            render_pass.set_index_buffer(buffer.slice(offset..), format);
+            render_pass.draw_indexed(0..count, 0, 0..instances);
+        } else {
+            render_pass.draw(0..count, 0..instances);
+        }
+    }
+
+    pub fn blit_texture(
+        &self,
+        source: &Texture,
+        source_rect: RectI,
+        dest: &Texture,
+        dest_rect: RectI,
+    ) {
+        let mut encoder_borrow = self.encoder.borrow_mut();
+        if encoder_borrow.is_none() {
+            *encoder_borrow = Some(
+                self.device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None }),
+            );
+        }
+        let encoder = encoder_borrow.as_mut().unwrap();
+
+        encoder.copy_texture_to_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &source.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: source_rect.origin().x() as u32,
+                    y: rect_y(source_rect, source.size),
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyTextureInfo {
+                texture: &dest.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: dest_rect.origin().x() as u32,
+                    y: rect_y(dest_rect, dest.size),
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d {
+                width: source_rect.size().x() as u32,
+                height: source_rect.size().y() as u32,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+
+    pub fn dispatch(
+        &self,
+        pipeline: &wgpu::ComputePipeline,
+        bind_groups: &[wgpu::BindGroup],
+        num_groups: (u32, u32, u32),
+    ) {
+        let mut encoder_borrow = self.encoder.borrow_mut();
+        if encoder_borrow.is_none() {
+            *encoder_borrow = Some(
+                self.device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None }),
+            );
+        }
+        let encoder = encoder_borrow.as_mut().unwrap();
+
+        let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: None,
+            timestamp_writes: None,
+        });
+        compute_pass.set_pipeline(pipeline);
+        for (i, bg) in bind_groups.iter().enumerate() {
+            compute_pass.set_bind_group(i as u32, bg, &[]);
+        }
+        compute_pass.dispatch_workgroups(num_groups.0, num_groups.1, num_groups.2);
+    }
+
+    pub fn create_timer_query(&self) -> TimerQuery {
+        TimerQuery::new()
+    }
+
+    pub fn begin_timer_query(&self, query: &mut TimerQuery) {
+        query.begin();
+    }
+
+    pub fn end_timer_query(&self, query: &mut TimerQuery) {
+        query.end();
+    }
+
+    pub fn try_recv_timer_query(&self, query: &TimerQuery) -> Option<Duration> {
+        query.elapsed()
+    }
+
+    pub fn read_pixels(&self, _target: &RenderTarget, _viewport: RectI) -> () {
+        ()
+    }
+
+    pub fn recv_texture_data(&self, _receiver: &()) -> TextureData {
+        TextureData::U8(vec![])
+    }
+
+    pub fn create_render_pipeline(
+        &self,
+        resources: &dyn ResourceLoader,
+        name: &str,
+        extra: Option<&str>,
+    ) -> wgpu::RenderPipeline {
+        let path = format!("shaders/{}.wgsl", name);
+        let source = resources.slurp(&path).expect("Failed to load shader");
+
+        let module = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some(name),
+                source: wgpu::ShaderSource::Wgsl(String::from_utf8_lossy(&source).into()),
+            });
+
+        if name.contains("blit") {
+            let bgl0 = self
+                .device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("Blit Globals"),
+                    entries: &[wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    }],
+                });
+            let bgl1 = self
+                .device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("Blit Texture"),
+                    entries: &[
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                            count: None,
+                        },
+                    ],
+                });
+
+            let pipeline_layout =
+                self.device
+                    .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some("Blit Layout"),
+                        bind_group_layouts: &[Some(&bgl0), Some(&bgl1)],
+                        immediate_size: 0,
+                    });
+
+            let pipeline = self
+                .device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(name),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &module,
+                        entry_point: Some("vs_main"),
+                        buffers: &[],
+                        compilation_options: Default::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &module,
+                        entry_point: Some("fs_main"),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: wgpu::TextureFormat::Rgba8Unorm,
+                            blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: Default::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                });
+
+            return pipeline;
+        }
+
+        if name.contains("clear") {
+            let bgl0 = self
+                .device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("Clear Globals"),
+                    entries: &[wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    }],
+                });
+            let pipeline_layout =
+                self.device
+                    .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some("Clear Layout"),
+                        bind_group_layouts: &[Some(&bgl0)],
+                        immediate_size: 0,
+                    });
+            let pipeline = self
+                .device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(name),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &module,
+                        entry_point: Some("vs_main"),
+                        buffers: &[wgpu::VertexBufferLayout {
+                            array_stride: 4,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &wgpu::vertex_attr_array![0 => Uint16x2],
+                        }],
+                        compilation_options: Default::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &module,
+                        entry_point: Some("fs_main"),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: wgpu::TextureFormat::Rgba8Unorm,
+                            blend: None,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: Default::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                });
+            return pipeline;
+        }
+
+        if name.contains("stencil") {
+            let bgl0 = self
+                .device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("Stencil Globals"),
+                    entries: &[wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    }],
+                });
+            let pipeline_layout =
+                self.device
+                    .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some("Stencil Layout"),
+                        bind_group_layouts: &[Some(&bgl0)],
+                        immediate_size: 0,
+                    });
+            let pipeline = self
+                .device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(name),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &module,
+                        entry_point: Some("vs_main"),
+                        buffers: &[wgpu::VertexBufferLayout {
+                            array_stride: 4,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &wgpu::vertex_attr_array![0 => Uint16x2],
+                        }],
+                        compilation_options: Default::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &module,
+                        entry_point: Some("fs_main"),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: wgpu::TextureFormat::Rgba8Unorm,
+                            blend: None,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: Default::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                });
+            return pipeline;
+        }
+
+        if name.contains("reproject") {
+            let bgl0 = self
+                .device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("Reproject Globals"),
+                    entries: &[wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    }],
+                });
+            let bgl1 = self
+                .device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("Reproject Texture"),
+                    entries: &[
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                            count: None,
+                        },
+                    ],
+                });
+            let pipeline_layout =
+                self.device
+                    .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some("Reproject Layout"),
+                        bind_group_layouts: &[Some(&bgl0), Some(&bgl1)],
+                        immediate_size: 0,
+                    });
+            let pipeline = self
+                .device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(name),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &module,
+                        entry_point: Some("vs_main"),
+                        buffers: &[wgpu::VertexBufferLayout {
+                            array_stride: 4,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &wgpu::vertex_attr_array![0 => Uint16x2],
+                        }],
+                        compilation_options: Default::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &module,
+                        entry_point: Some("fs_main"),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: wgpu::TextureFormat::Rgba8Unorm,
+                            blend: None,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: Default::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                });
+            return pipeline;
+        }
+
+        if name.contains("demo_ground") {
+            let bgl0 = self
+                .device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("Demo Ground BG Layout"),
+                    entries: &[wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    }],
+                });
+
+            let pipeline_layout =
+                self.device
+                    .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some("Demo Ground Layout"),
+                        bind_group_layouts: &[Some(&bgl0)],
+                        immediate_size: 0,
+                    });
+
+            let pipeline = self
+                .device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(name),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &module,
+                        entry_point: Some("vs_main"),
+                        buffers: &[wgpu::VertexBufferLayout {
+                            array_stride: 4,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &wgpu::vertex_attr_array![0 => Uint16x2],
+                        }],
+                        compilation_options: Default::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &module,
+                        entry_point: Some("fs_main"),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: wgpu::TextureFormat::Rgba8Unorm,
+                            blend: None,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: Default::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                });
+            return pipeline;
+        }
+
+        if name.contains("d3d9/fill") {
+            let bgl0 = self
+                .device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("D3D9 Fill Globals"),
+                    entries: &[
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 2,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                            count: None,
+                        },
+                    ],
+                });
+            let pipeline_layout =
+                self.device
+                    .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some("D3D9 Fill Layout"),
+                        bind_group_layouts: &[Some(&bgl0)],
+                        immediate_size: 0,
+                    });
+            let pipeline = self
+                .device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(name),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &module,
+                        entry_point: Some("vs_main"),
+                        buffers: &[
+                            wgpu::VertexBufferLayout {
+                                array_stride: 4,
+                                step_mode: wgpu::VertexStepMode::Vertex,
+                                attributes: &wgpu::vertex_attr_array![0 => Uint16x2],
+                            },
+                            wgpu::VertexBufferLayout {
+                                array_stride: 12,
+                                step_mode: wgpu::VertexStepMode::Instance,
+                                attributes: &wgpu::vertex_attr_array![1 => Uint16x4, 2 => Uint32],
+                            },
+                        ],
+                        compilation_options: Default::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &module,
+                        entry_point: Some("fs_main"),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: wgpu::TextureFormat::Rgba16Float,
+                            blend: Some(wgpu::BlendState {
+                                color: wgpu::BlendComponent {
+                                    src_factor: wgpu::BlendFactor::One,
+                                    dst_factor: wgpu::BlendFactor::One,
+                                    operation: wgpu::BlendOperation::Add,
+                                },
+                                alpha: wgpu::BlendComponent {
+                                    src_factor: wgpu::BlendFactor::One,
+                                    dst_factor: wgpu::BlendFactor::One,
+                                    operation: wgpu::BlendOperation::Add,
+                                },
+                            }),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: Default::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                });
+            return pipeline;
+        }
+
+        if name.contains("d3d9/tile") {
+            let bgl0 = self
+                .device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("D3D9 Tile Globals"),
+                    entries: &[wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    }],
+                });
+
+            let bgl1 = self
+                .device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("D3D9 Tile Textures"),
+                    entries: &[
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::VERTEX,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::VERTEX,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 2,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 3,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 4,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 5,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 6,
+                            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                            count: None,
+                        },
+                    ],
+                });
+
+            let pipeline_layout =
+                self.device
+                    .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some("D3D9 Tile Layout"),
+                        bind_group_layouts: &[Some(&bgl0), Some(&bgl1)],
+                        immediate_size: 0,
+                    });
+
+            let pipeline = self
+                .device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(name),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &module,
+                        entry_point: Some("vs_main"),
+                        buffers: &[
+                            // Buffer 0: Vertex Step Mode
+                            wgpu::VertexBufferLayout {
+                                array_stride: 4,
+                                step_mode: wgpu::VertexStepMode::Vertex,
+                                attributes: &wgpu::vertex_attr_array![0 => Uint16x2],
+                            },
+                            // Buffer 1: Instance Step Mode
+                            wgpu::VertexBufferLayout {
+                                array_stride: 16,
+                                step_mode: wgpu::VertexStepMode::Instance,
+                                attributes: &[
+                                    wgpu::VertexAttribute {
+                                        format: wgpu::VertexFormat::Sint16x2,
+                                        offset: 0,
+                                        shader_location: 1,
+                                    },
+                                    wgpu::VertexAttribute {
+                                        format: wgpu::VertexFormat::Uint8x4,
+                                        offset: 4,
+                                        shader_location: 2,
+                                    },
+                                    wgpu::VertexAttribute {
+                                        format: wgpu::VertexFormat::Sint32,
+                                        offset: 8,
+                                        shader_location: 3,
+                                    },
+                                    wgpu::VertexAttribute {
+                                        format: wgpu::VertexFormat::Sint8x2,
+                                        offset: 12,
+                                        shader_location: 4,
+                                    },
+                                    wgpu::VertexAttribute {
+                                        format: wgpu::VertexFormat::Uint16,
+                                        offset: 14,
+                                        shader_location: 5,
+                                    },
+                                ],
+                            },
+                        ],
+                        compilation_options: Default::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &module,
+                        entry_point: Some("fs_main"),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: wgpu::TextureFormat::Rgba8Unorm,
+                            blend: Some(wgpu::BlendState {
+                                color: wgpu::BlendComponent {
+                                    src_factor: wgpu::BlendFactor::One,
+                                    dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                                    operation: wgpu::BlendOperation::Add,
+                                },
+                                alpha: wgpu::BlendComponent {
+                                    src_factor: wgpu::BlendFactor::One,
+                                    dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                                    operation: wgpu::BlendOperation::Add,
+                                },
+                            }),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: Default::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                });
+            return pipeline;
+        }
+
+        // if name.contains("d3d9/tile_clip") || name.contains("d3d9/tile_copy") {
+        //     let bgl0 = self
+        //         .device
+        //         .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        //             label: Some("D3D9 Clip/Copy Globals"),
+        //             entries: &[wgpu::BindGroupLayoutEntry {
+        //                 binding: 0,
+        //                 visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+        //                 ty: wgpu::BindingType::Buffer {
+        //                     ty: wgpu::BufferBindingType::Uniform,
+        //                     has_dynamic_offset: false,
+        //                     min_binding_size: None,
+        //                 },
+        //                 count: None,
+        //             }],
+        //         });
+        //     let bgl1 = self
+        //         .device
+        //         .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        //             label: Some("D3D9 Clip/Copy Textures"),
+        //             entries: &[
+        //                 wgpu::BindGroupLayoutEntry {
+        //                     binding: 0,
+        //                     visibility: wgpu::ShaderStages::FRAGMENT,
+        //                     ty: wgpu::BindingType::Texture {
+        //                         sample_type: wgpu::TextureSampleType::Float { filterable: true },
+        //                         view_dimension: wgpu::TextureViewDimension::D2,
+        //                         multisampled: false,
+        //                     },
+        //                     count: None,
+        //                 },
+        //                 wgpu::BindGroupLayoutEntry {
+        //                     binding: 1,
+        //                     visibility: wgpu::ShaderStages::FRAGMENT,
+        //                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+        //                     count: None,
+        //                 },
+        //             ],
+        //         });
+        //     let pipeline_layout =
+        //         self.device
+        //             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        //                 label: Some("D3D9 Clip/Copy Layout"),
+        //                 bind_group_layouts: &[Some(&bgl0), Some(&bgl1)],
+        //                 immediate_size: 0,
+        //             });
+        //     let pipeline = self
+        //         .device
+        //         .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        //             label: Some(name),
+        //             layout: Some(&pipeline_layout),
+        //             vertex: wgpu::VertexState {
+        //                 module: &module,
+        //                 entry_point: Some("vs_main"),
+        //                 buffers: &[wgpu::VertexBufferLayout {
+        //                     array_stride: 4,
+        //                     step_mode: wgpu::VertexStepMode::Vertex,
+        //                     attributes: &wgpu::vertex_attr_array![0 => Uint16x2],
+        //                 }],
+        //                 compilation_options: Default::default(),
+        //             },
+        //             fragment: Some(wgpu::FragmentState {
+        //                 module: &module,
+        //                 entry_point: Some("fs_main"),
+        //                 targets: &[Some(wgpu::ColorTargetState {
+        //                     format: wgpu::TextureFormat::Rgba8Unorm,
+        //                     blend: None,
+        //                     write_mask: wgpu::ColorWrites::ALL,
+        //                 })],
+        //                 compilation_options: Default::default(),
+        //             }),
+        //             primitive: wgpu::PrimitiveState::default(),
+        //             depth_stencil: None,
+        //             multisample: wgpu::MultisampleState::default(),
+        //             multiview_mask: None,
+        //             cache: None,
+        //         });
+        //     return pipeline;
+        // }
+
+        if name.contains("d3d11/tile") {
+            let bgl0 = self
+                .device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("D3D11 Tile Globals"),
+                    entries: &[
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 2,
+                            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 3,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 4,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                    ],
+                });
+            let bgl1 = self
+                .device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("D3D11 Tile Textures"),
+                    entries: &[
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 2,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 3,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                            count: None,
+                        },
+                    ],
+                });
+            let pipeline_layout =
+                self.device
+                    .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some("D3D11 Tile Layout"),
+                        bind_group_layouts: &[Some(&bgl0), Some(&bgl1)],
+                        immediate_size: 0,
+                    });
+            let pipeline = self
+                .device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(name),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &module,
+                        entry_point: Some("vs_main"),
+                        buffers: &[wgpu::VertexBufferLayout {
+                            array_stride: 4,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &wgpu::vertex_attr_array![0 => Uint16x2],
+                        }],
+                        compilation_options: Default::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &module,
+                        entry_point: Some("fs_main"),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: wgpu::TextureFormat::Rgba8Unorm,
+                            blend: None,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: Default::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                });
+            return pipeline;
+        }
+
+        if name.contains("debug/solid") {
+            let bgl0 = self
+                .device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("Debug Solid BG Layout"),
+                    entries: &[
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::VERTEX,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                    ],
+                });
+
+            let pipeline_layout =
+                self.device
+                    .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some("Debug Solid Layout"),
+                        bind_group_layouts: &[Some(&bgl0)],
+                        immediate_size: 0,
+                    });
+
+            let mut topology = wgpu::PrimitiveTopology::TriangleList;
+            if let Some(ex) = extra {
+                if ex.contains("outline") {
+                    topology = wgpu::PrimitiveTopology::LineList
                 }
             }
-            ProgramKind::Compute(compute) => {
-                ProgramKind::Compute(self.create_shader(resources, compute, ShaderKind::Compute))
+
+            let pipeline = self
+                .device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(name),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &module,
+                        entry_point: Some("vs_main"),
+                        buffers: &[wgpu::VertexBufferLayout {
+                            array_stride: 8,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &wgpu::vertex_attr_array![0 => Float32x2],
+                        }],
+                        compilation_options: Default::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &module,
+                        entry_point: Some("fs_main"),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: wgpu::TextureFormat::Rgba8Unorm,
+                            blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: Default::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState {
+                        topology,
+                        ..Default::default()
+                    },
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                });
+            return pipeline;
+        }
+
+        if name.contains("debug/texture") {
+            let bgl0 = self
+                .device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("Debug Texture Globals"),
+                    entries: &[
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 2,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 3,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
+                    ],
+                });
+            let pipeline_layout =
+                self.device
+                    .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some("Debug Texture Layout"),
+                        bind_group_layouts: &[Some(&bgl0)],
+                        immediate_size: 0,
+                    });
+
+            let pipeline = self
+                .device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(name),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &module,
+                        entry_point: Some("vs_main"),
+                        buffers: &[wgpu::VertexBufferLayout {
+                            array_stride: 16,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2],
+                        }],
+                        compilation_options: Default::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &module,
+                        entry_point: Some("fs_main"),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: wgpu::TextureFormat::Rgba8Unorm,
+                            blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: Default::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                });
+            return pipeline;
+        }
+
+        unimplemented!("Shader {} not implemented in wgpu backend", name);
+    }
+
+    pub fn create_compute_pipeline(
+        &self,
+        resources: &dyn ResourceLoader,
+        name: &str,
+    ) -> wgpu::ComputePipeline {
+        let path = format!("shaders/{}.wgsl", name);
+        let source = resources.slurp(&path).expect("Failed to load shader");
+        let module = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some(name),
+                source: wgpu::ShaderSource::Wgsl(String::from_utf8_lossy(&source).into()),
+            });
+
+        let (bind_group_layouts, pipeline_layout) = match name {
+            "d3d11/bound" => {
+                let bgl0 = self
+                    .device
+                    .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                        label: Some("D3D11 Bound Globals"),
+                        entries: &[wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        }],
+                    });
+                let bgl1 = self
+                    .device
+                    .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                        label: Some("D3D11 Bound Storage"),
+                        entries: &[
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 0,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 1,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                        ],
+                    });
+                let pl = self
+                    .device
+                    .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some("D3D11 Bound Layout"),
+                        bind_group_layouts: &[Some(&bgl0), Some(&bgl1)],
+                        immediate_size: 0,
+                    });
+                (vec![bgl0, bgl1], pl)
+            }
+            "d3d11/dice" => {
+                let bgl0 = self
+                    .device
+                    .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                        label: Some("D3D11 Dice Globals"),
+                        entries: &[wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        }],
+                    });
+                let bgl1 = self
+                    .device
+                    .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                        label: Some("D3D11 Dice Storage"),
+                        entries: &[
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 0,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 1,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 2,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 3,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 4,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                        ],
+                    });
+                let pl = self
+                    .device
+                    .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some("D3D11 Dice Layout"),
+                        bind_group_layouts: &[Some(&bgl0), Some(&bgl1)],
+                        immediate_size: 0,
+                    });
+                (vec![bgl0, bgl1], pl)
+            }
+            "d3d11/bin" => {
+                let bgl0 = self
+                    .device
+                    .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                        label: Some("D3D11 Bin Globals"),
+                        entries: &[wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        }],
+                    });
+                let bgl1 = self
+                    .device
+                    .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                        label: Some("D3D11 Bin Storage"),
+                        entries: &[
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 0,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 1,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 2,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 3,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 4,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 5,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                        ],
+                    });
+                let pl = self
+                    .device
+                    .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some("D3D11 Bin Layout"),
+                        bind_group_layouts: &[Some(&bgl0), Some(&bgl1)],
+                        immediate_size: 0,
+                    });
+                (vec![bgl0, bgl1], pl)
+            }
+            "d3d11/propagate" => {
+                let bgl0 = self
+                    .device
+                    .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                        label: Some("D3D11 Propagate Globals"),
+                        entries: &[wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        }],
+                    });
+                let bgl1 = self
+                    .device
+                    .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                        label: Some("D3D11 Propagate Storage"),
+                        entries: &[
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 0,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 1,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 2,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 3,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 4,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 5,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 6,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 7,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 0,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Uniform,
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                        ],
+                    });
+                let pl = self
+                    .device
+                    .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some("D3D11 Propagate Layout"),
+                        bind_group_layouts: &[Some(&bgl0), Some(&bgl1)],
+                        immediate_size: 0,
+                    });
+                (vec![bgl0, bgl1], pl)
+            }
+            "d3d11/sort" => {
+                let bgl0 = self
+                    .device
+                    .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                        label: Some("D3D11 Sort Globals"),
+                        entries: &[wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        }],
+                    });
+                let bgl1 = self
+                    .device
+                    .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                        label: Some("D3D11 Sort Storage"),
+                        entries: &[
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 0,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 1,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 2,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                        ],
+                    });
+                let pl = self
+                    .device
+                    .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some("D3D11 Sort Layout"),
+                        bind_group_layouts: &[Some(&bgl0), Some(&bgl1)],
+                        immediate_size: 0,
+                    });
+                (vec![bgl0, bgl1], pl)
+            }
+            "d3d11/fill" => {
+                let bgl0 = self
+                    .device
+                    .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                        label: Some("D3D11 Fill Globals"),
+                        entries: &[
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 0,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::StorageTexture {
+                                    access: wgpu::StorageTextureAccess::ReadWrite,
+                                    format: wgpu::TextureFormat::Rgba8Unorm,
+                                    view_dimension: wgpu::TextureViewDimension::D2,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 1,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Texture {
+                                    sample_type: wgpu::TextureSampleType::Float {
+                                        filterable: true,
+                                    },
+                                    view_dimension: wgpu::TextureViewDimension::D2,
+                                    multisampled: false,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 2,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 3,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Uniform,
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                        ],
+                    });
+                let bgl1 = self
+                    .device
+                    .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                        label: Some("D3D11 Fill Storage"),
+                        entries: &[
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 0,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 1,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 2,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                        ],
+                    });
+                let pl = self
+                    .device
+                    .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some("D3D11 Fill Layout"),
+                        bind_group_layouts: &[Some(&bgl0), Some(&bgl1)],
+                        immediate_size: 0,
+                    });
+                (vec![bgl0, bgl1], pl)
+            }
+            "d3d11/tile" => {
+                let bgl0 = self
+                    .device
+                    .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                        label: Some("D3D11 Tile Globals"),
+                        entries: &[wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        }],
+                    });
+                let bgl1 = self
+                    .device
+                    .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                        label: Some("D3D11 Tile Dest"),
+                        entries: &[wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::StorageTexture {
+                                access: wgpu::StorageTextureAccess::ReadWrite,
+                                format: wgpu::TextureFormat::Rgba8Unorm,
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                            },
+                            count: None,
+                        }],
+                    });
+                let bgl2 = self
+                    .device
+                    .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                        label: Some("D3D11 Tile Textures"),
+                        entries: &[
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 0,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Texture {
+                                    sample_type: wgpu::TextureSampleType::Float {
+                                        filterable: true,
+                                    },
+                                    view_dimension: wgpu::TextureViewDimension::D2,
+                                    multisampled: false,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 1,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Texture {
+                                    sample_type: wgpu::TextureSampleType::Float {
+                                        filterable: true,
+                                    },
+                                    view_dimension: wgpu::TextureViewDimension::D2,
+                                    multisampled: false,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 2,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Texture {
+                                    sample_type: wgpu::TextureSampleType::Float {
+                                        filterable: true,
+                                    },
+                                    view_dimension: wgpu::TextureViewDimension::D2,
+                                    multisampled: false,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 3,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Texture {
+                                    sample_type: wgpu::TextureSampleType::Float {
+                                        filterable: true,
+                                    },
+                                    view_dimension: wgpu::TextureViewDimension::D2,
+                                    multisampled: false,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 4,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Texture {
+                                    sample_type: wgpu::TextureSampleType::Float {
+                                        filterable: true,
+                                    },
+                                    view_dimension: wgpu::TextureViewDimension::D2,
+                                    multisampled: false,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 5,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                                count: None,
+                            },
+                        ],
+                    });
+                let bgl3 = self
+                    .device
+                    .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                        label: Some("D3D11 Tile Storage"),
+                        entries: &[
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 0,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 1,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                        ],
+                    });
+                let pl = self
+                    .device
+                    .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some("D3D11 Tile Layout"),
+                        bind_group_layouts: &[Some(&bgl0), Some(&bgl1), Some(&bgl2), Some(&bgl3)],
+                        immediate_size: 0,
+                    });
+                (vec![bgl0, bgl1, bgl2, bgl3], pl)
+            }
+            _ => {
+                let bgl0 = self
+                    .device
+                    .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                        label: Some("Compute Globals"),
+                        entries: &[wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        }],
+                    });
+                let pl = self
+                    .device
+                    .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some("Compute Layout"),
+                        bind_group_layouts: &[Some(&bgl0)],
+                        immediate_size: 0,
+                    });
+                (vec![bgl0], pl)
             }
         };
-        self.create_program_from_shaders(resources, program_name, shaders)
+
+        let pipeline = self
+            .device
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some(name),
+                layout: Some(&pipeline_layout),
+                module: &module,
+                entry_point: Some("cs_main"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+
+        pipeline
     }
-
-    fn create_raster_program(&self, resources: &dyn ResourceLoader, name: &str) -> Self::Program {
-        let shaders = ProgramKind::Raster { vertex: name, fragment: name };
-        self.create_program_from_shader_names(resources, name, shaders)
-    }
-
-    fn create_compute_program(&self, resources: &dyn ResourceLoader, name: &str) -> Self::Program {
-        let shaders = ProgramKind::Compute(name);
-        self.create_program_from_shader_names(resources, name, shaders)
-    }
-}
-
-/// These are rough analogues to D3D versions; don't expect them to represent exactly the feature
-/// set of the versions.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum FeatureLevel {
-    D3D10,
-    D3D11,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum TextureFormat {
-    R8,
-    R16F,
-    RGBA8,
-    RGBA16F,
-    RGBA32F,
 }
 
 #[derive(Clone, Copy, Debug)]
-pub enum VertexAttrType {
-    F32,
-    I8,
-    I16,
-    I32,
-    U8,
-    U16,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum BufferData<'a, T> {
-    Uninitialized(usize),
-    Memory(&'a [T]),
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum BufferTarget {
-    Vertex,
-    Index,
-    Storage,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum BufferUploadMode {
-    Static,
-    Dynamic,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum ShaderKind {
-    Vertex,
-    Fragment,
-    Compute,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum ProgramKind<T> {
-    Raster {
-        vertex: T,
-        fragment: T,
-    },
-    Compute(T),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ComputeDimensions {
-    pub x: u32,
-    pub y: u32,
-    pub z: u32,
-}
-
-#[derive(Clone, Copy)]
 pub enum UniformData {
     Float(f32),
     IVec2(I32x2),
-    IVec3([i32; 3]),
     Int(i32),
-    Mat2(F32x4),
     Mat4([F32x4; 4]),
     Vec2(F32x2),
-    Vec3([f32; 3]),
     Vec4(F32x4),
 }
 
-#[derive(Clone, Copy)]
-pub enum Primitive {
-    Triangles,
-    Lines,
-}
-
-#[derive(Clone)]
-pub struct RenderState<'a, D> where D: Device {
-    pub target: &'a RenderTarget<'a, D>,
-    pub program: &'a D::Program,
-    pub vertex_array: &'a D::VertexArray,
-    pub primitive: Primitive,
-    pub uniforms: &'a [UniformBinding<'a, D::Uniform>],
-    pub textures: &'a [TextureBinding<'a, D::TextureParameter, D::Texture>],
-    pub images: &'a [ImageBinding<'a, D::ImageParameter, D::Texture>],
-    pub storage_buffers: &'a [(&'a D::StorageBuffer, &'a D::Buffer)],
-    pub viewport: RectI,
-    pub options: RenderOptions,
-}
-
-#[derive(Clone)]
-pub struct ComputeState<'a, D> where D: Device {
-    pub program: &'a D::Program,
-    pub uniforms: &'a [UniformBinding<'a, D::Uniform>],
-    pub textures: &'a [TextureBinding<'a, D::TextureParameter, D::Texture>],
-    pub images: &'a [ImageBinding<'a, D::ImageParameter, D::Texture>],
-    pub storage_buffers: &'a [(&'a D::StorageBuffer, &'a D::Buffer)],
-}
-
-pub type UniformBinding<'a, U> = (&'a U, UniformData);
-
-pub type TextureBinding<'a, TP, T> = (&'a TP, &'a T);
-
-pub type ImageBinding<'a, IP, T> = (&'a IP, &'a T, ImageAccess);
-
-#[derive(Clone, Debug)]
-pub struct RenderOptions {
-    pub blend: Option<BlendState>,
-    pub depth: Option<DepthState>,
-    pub stencil: Option<StencilState>,
-    pub clear_ops: ClearOps,
-    pub color_mask: bool,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct ClearOps {
-    pub color: Option<ColorF>,
-    pub depth: Option<f32>,
-    pub stencil: Option<u8>,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum RenderTarget<'a, D> where D: Device {
-    Default,
-    Framebuffer(&'a D::Framebuffer),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct BlendState {
-    pub dest_rgb_factor: BlendFactor,
-    pub dest_alpha_factor: BlendFactor,
-    pub src_rgb_factor: BlendFactor,
-    pub src_alpha_factor: BlendFactor,
-    pub op: BlendOp,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum BlendFactor {
-    Zero,
-    One,
-    SrcAlpha,
-    OneMinusSrcAlpha,
-    DestAlpha,
-    OneMinusDestAlpha,
-    DestColor,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum BlendOp {
-    Add,
-    Subtract,
-    ReverseSubtract,
-    Min,
-    Max,
-}
-
-#[derive(Clone, Copy, Default, Debug)]
-pub struct DepthState {
-    pub func: DepthFunc,
-    pub write: bool,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum DepthFunc {
-    Less,
-    Always,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct StencilState {
-    pub func: StencilFunc,
-    pub reference: u32,
-    pub mask: u32,
-    pub write: bool,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum StencilFunc {
-    Always,
-    Equal,
-}
-
-impl Default for RenderOptions {
-    #[inline]
-    fn default() -> RenderOptions {
-        RenderOptions {
-            blend: None,
-            depth: None,
-            stencil: None,
-            clear_ops: ClearOps::default(),
-            color_mask: true,
-        }
-    }
-}
-
-impl Default for BlendOp {
-    #[inline]
-    fn default() -> BlendOp {
-        BlendOp::Add
-    }
-}
-
-impl Default for StencilState {
-    #[inline]
-    fn default() -> StencilState {
-        StencilState {
-            func: StencilFunc::default(),
-            reference: 0,
-            mask: !0,
-            write: false,
-        }
-    }
-}
-
-impl Default for DepthFunc {
-    #[inline]
-    fn default() -> DepthFunc {
-        DepthFunc::Less
-    }
-}
-
-impl Default for StencilFunc {
-    #[inline]
-    fn default() -> StencilFunc {
-        StencilFunc::Always
+impl UniformData {
+    pub fn from_transform_3d(transform: &Transform4F) -> UniformData {
+        UniformData::Mat4([transform.c0, transform.c1, transform.c2, transform.c3])
     }
 }
 
 #[derive(Clone, Debug)]
 pub enum TextureData {
     U8(Vec<u8>),
-    U16(Vec<u16>),
-    F16(Vec<f16>),
     F32(Vec<f32>),
 }
 
@@ -451,72 +2158,6 @@ pub enum TextureDataRef<'a> {
     U8(&'a [u8]),
     F16(&'a [f16]),
     F32(&'a [f32]),
-}
-
-impl UniformData {
-    #[inline]
-    pub fn from_transform_3d(transform: &Transform4F) -> UniformData {
-        UniformData::Mat4([transform.c0, transform.c1, transform.c2, transform.c3])
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct VertexAttrDescriptor {
-    pub size: usize,
-    pub class: VertexAttrClass,
-    pub attr_type: VertexAttrType,
-    pub stride: usize,
-    pub offset: usize,
-    pub divisor: u32,
-    pub buffer_index: u32,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum VertexAttrClass {
-    Float,
-    FloatNorm,
-    Int,
-}
-
-impl TextureFormat {
-    #[inline]
-    pub fn channels(self) -> usize {
-        match self {
-            TextureFormat::R8 | TextureFormat::R16F => 1,
-            TextureFormat::RGBA8 | TextureFormat::RGBA16F | TextureFormat::RGBA32F => 4,
-        }
-    }
-
-    #[inline]
-    pub fn bytes_per_pixel(self) -> usize {
-        match self {
-            TextureFormat::R8 => 1,
-            TextureFormat::R16F => 2,
-            TextureFormat::RGBA8 => 4,
-            TextureFormat::RGBA16F => 8,
-            TextureFormat::RGBA32F => 16,
-        }
-    }
-}
-
-impl ClearOps {
-    #[inline]
-    pub fn has_ops(&self) -> bool {
-        self.color.is_some() || self.depth.is_some() || self.stencil.is_some()
-    }
-}
-
-impl Default for BlendState {
-    #[inline]
-    fn default() -> BlendState {
-        BlendState {
-            src_rgb_factor: BlendFactor::One,
-            dest_rgb_factor: BlendFactor::OneMinusSrcAlpha,
-            src_alpha_factor: BlendFactor::One,
-            dest_alpha_factor: BlendFactor::One,
-            op: BlendOp::Add,
-        }
-    }
 }
 
 bitflags! {
@@ -528,40 +2169,6 @@ bitflags! {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum ImageAccess {
-    Read,
-    Write,
-    ReadWrite,
-}
-
-impl<'a> TextureDataRef<'a> {
-    #[doc(hidden)]
-    pub fn check_and_extract_data_ptr(self, minimum_size: Vector2I, format: TextureFormat)
-                                      -> *const c_void {
-        let channels = match (format, self) {
-            (TextureFormat::R8, TextureDataRef::U8(_)) => 1,
-            (TextureFormat::RGBA8, TextureDataRef::U8(_)) => 4,
-            (TextureFormat::RGBA16F, TextureDataRef::F16(_)) => 4,
-            (TextureFormat::RGBA32F, TextureDataRef::F32(_)) => 4,
-            _ => panic!("Unimplemented texture format!"),
-        };
-
-        let area = minimum_size.x() as usize * minimum_size.y() as usize;
-
-        match self {
-            TextureDataRef::U8(data) => {
-                assert!(data.len() >= area * channels);
-                data.as_ptr() as *const c_void
-            }
-            TextureDataRef::F16(data) => {
-                assert!(data.len() >= area * channels);
-                data.as_ptr() as *const c_void
-            }
-            TextureDataRef::F32(data) => {
-                assert!(data.len() >= area * channels);
-                data.as_ptr() as *const c_void
-            }
-        }
-    }
+fn rect_y(rect: RectI, texture_size: Vector2I) -> u32 {
+    (texture_size.y() - rect.origin().y() - rect.size().y()) as u32
 }

@@ -33,11 +33,11 @@ use pathfinder_geometry::rect::{RectF, RectI};
 use pathfinder_geometry::transform2d::Transform2F;
 use pathfinder_geometry::transform3d::Transform4F;
 use pathfinder_geometry::vector::{Vector2F, Vector2I, Vector4F, vec2f, vec2i};
-use pathfinder_gpu::Device;
+use pathfinder_gpu::{Device, Texture};
 use pathfinder_renderer::concurrent::scene_proxy::SceneProxy;
 use pathfinder_renderer::gpu::options::{DestFramebuffer, RendererLevel};
 use pathfinder_renderer::gpu::options::{RendererMode, RendererOptions};
-use pathfinder_renderer::gpu::renderer::{DebugUIPresenterInfo, Renderer};
+use pathfinder_renderer::gpu::renderer::{DebugUiPresenterInfo, Renderer};
 use pathfinder_renderer::options::{BuildOptions, RenderTransform};
 use pathfinder_renderer::paint::Paint;
 use pathfinder_renderer::scene::{DrawPath, RenderTarget, Scene};
@@ -50,13 +50,7 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
 use usvg::{Options as UsvgOptions, Tree as SvgTree};
-use pdf::file::{CachedFile, FileOptions};
-use pdf_render::{Cache as PdfRenderCache, SceneBackend};
 
-#[cfg(any(not(target_os = "macos"), feature = "pf-gl"))]
-use pathfinder_gl::GLDevice as DeviceImpl;
-#[cfg(all(target_os = "macos", not(feature = "pf-gl")))]
-use pathfinder_metal::MetalDevice as DeviceImpl;
 
 static DEFAULT_SVG_VIRTUAL_PATH: &'static str = "svg/Ghostscript_Tiger.svg";
 
@@ -85,11 +79,6 @@ mod ui;
 
 enum Content {
     Svg(SvgTree),
-    Pdf {
-        file: CachedFile<Vec<u8>>,
-        cache: PdfRenderCache,
-        page_nr: u32
-    }
 }
 
 pub struct DemoApp<W> where W: Window {
@@ -115,31 +104,22 @@ pub struct DemoApp<W> where W: Window {
     current_frame: Option<Frame>,
 
     ui_model: DemoUIModel,
-    ui_presenter: DemoUIPresenter<DeviceImpl>,
+    ui_presenter: DemoUIPresenter,
 
     scene_proxy: SceneProxy,
-    renderer: Renderer<DeviceImpl>,
+    renderer: Renderer,
 
-    scene_framebuffer: Option<<DeviceImpl as Device>::Framebuffer>,
+    scene_framebuffer: Option<Texture>,
 
-    ground_program: GroundProgram<DeviceImpl>,
-    ground_vertex_array: GroundVertexArray<DeviceImpl>,
+    ground_program: GroundProgram,
+    ground_vertex_array: GroundVertexArray,
 }
 
 impl<W> DemoApp<W> where W: Window {
     pub fn new(window: W, window_size: WindowSize, options: Options) -> DemoApp<W> {
         let expire_message_event_id = window.create_user_event_id();
 
-        let device;
-        #[cfg(all(target_os = "macos", not(feature = "pf-gl")))]
-        unsafe {
-            device = DeviceImpl::new(window.metal_device(), window.metal_io_surface());
-        }
-        #[cfg(any(not(target_os = "macos"), feature = "pf-gl"))]
-        {
-            device = DeviceImpl::new(window.gl_version(), window.gl_default_framebuffer());
-        }
-
+        let device = window.device().clone();
         let resources = window.resource_loader();
 
         // Set up the executor.
@@ -271,7 +251,7 @@ impl<W> DemoApp<W> where W: Window {
         let build_options = BuildOptions {
             transform: self.render_transform.clone().unwrap(),
             dilation: if self.ui_model.stem_darkening_effect_enabled {
-                let font_size = APPROX_FONT_SIZE * self.window_size.backing_scale_factor;
+                let font_size = APPROX_FONT_SIZE * self.window_size.scale_factor;
                 vec2f(STEM_DARKENING_FACTORS[0], STEM_DARKENING_FACTORS[1]) * font_size
             } else {
                 Vector2F::zero()
@@ -310,13 +290,18 @@ impl<W> DemoApp<W> where W: Window {
                     let mouse_position = self.process_mouse_position(new_position);
                     ui_events.push(UIEvent::MouseDown(mouse_position));
                 }
-                Event::MouseMoved(new_position) if self.mouselook_enabled => {
-                    let mouse_position = self.process_mouse_position(new_position);
-                    if let Camera::ThreeD { ref mut modelview_transform, .. } = self.camera {
-                        let rotation = mouse_position.relative.to_f32() * MOUSELOOK_ROTATION_SPEED;
-                        modelview_transform.yaw += rotation.x();
-                        modelview_transform.pitch += rotation.y();
-                        self.dirty = true;
+                Event::MouseUp => {
+                    ui_events.push(UIEvent::MouseUp);
+                }
+                Event::MouseMoved(new_position) => {
+                    self.process_mouse_position(new_position);
+                    if self.mouselook_enabled {
+                        if let Camera::ThreeD { ref mut modelview_transform, .. } = self.camera {
+                            let rotation = new_position.to_f32() * MOUSELOOK_ROTATION_SPEED;
+                            modelview_transform.yaw += rotation.x();
+                            modelview_transform.pitch += rotation.y();
+                            self.dirty = true;
+                        }
                     }
                 }
                 Event::MouseDragged(new_position) => {
@@ -326,8 +311,8 @@ impl<W> DemoApp<W> where W: Window {
                 }
                 Event::Zoom(d_dist, position) => {
                     if let Camera::TwoD(ref mut transform) = self.camera {
-                        let backing_scale_factor = self.window_size.backing_scale_factor;
-                        let position = position.to_f32() * backing_scale_factor;
+                        let scale_factor = self.window_size.scale_factor;
+                        let position = position.to_f32() * scale_factor;
                         let scale_delta = 1.0 + d_dist * CAMERA_SCALE_SPEED_2D;
                         *transform = transform.translate(-position)
                                               .scale(scale_delta)
@@ -478,7 +463,7 @@ impl<W> DemoApp<W> where W: Window {
     }
 
     fn process_mouse_position(&mut self, new_position: Vector2I) -> MousePosition {
-        let absolute = (new_position.to_f32() * self.window_size.backing_scale_factor).to_i32();
+        let absolute = new_position;
         let relative = absolute - self.last_mouse_position;
         self.last_mouse_position = absolute;
         MousePosition { absolute, relative }
@@ -499,25 +484,31 @@ impl<W> DemoApp<W> where W: Window {
         }
 
         self.renderer.debug_ui_presenter_mut().debug_ui_presenter.ui_presenter.mouse_position =
-            self.last_mouse_position.to_f32() * self.window_size.backing_scale_factor;
+            self.last_mouse_position.to_f32();
 
         let mut ui_action = UIAction::None;
         if self.options.ui == UIVisibility::All {
-            let DebugUIPresenterInfo { device, allocator, debug_ui_presenter } =
+            let intermediate_view = self.renderer.intermediate_dest_texture().view.clone();
+            let DebugUiPresenterInfo { device, allocator, debug_ui_presenter } =
                 self.renderer.debug_ui_presenter_mut();
+            debug_ui_presenter.ui_presenter.set_render_target(Some(intermediate_view));
             self.ui_presenter.update(device,
                                      allocator,
                                      &mut self.window,
                                      debug_ui_presenter,
                                      &mut ui_action,
                                      &mut self.ui_model);
+            debug_ui_presenter.draw(device, allocator);
         }
 
         self.handle_ui_events(frame, &mut ui_action);
 
         self.renderer.device().end_commands();
 
-        self.window.present(self.renderer.device_mut());
+        // Blit the intermediate texture to the screen surface using render pass
+        if let Some(surface_handle) = self.window.get_current_surface() {
+            self.renderer.blit_to_surface(surface_handle.view(), surface_handle.size());
+        }
         self.frame_counter += 1;
     }
 
@@ -606,7 +597,9 @@ impl<W> DemoApp<W> where W: Window {
             }
             UIAction::ZoomActualSize => {
                 if let Camera::TwoD(ref mut transform) = self.camera {
-                    *transform = Transform2F::default();
+                    let viewport_size = self.window.viewport(self.ui_model.mode.view(0)).size();
+                    let origin = viewport_size.to_f32() * 0.5 - self.scene_metadata.view_box.size() * 0.5;
+                    *transform = Transform2F::from_scale(1.0).translate(origin);
                     self.dirty = true;
                 }
             }
@@ -771,12 +764,6 @@ impl Content {
                 let message = get_svg_building_message(&built_svg);
                 (built_svg.scene, message)
             }
-            Content::Pdf { ref file, ref mut cache, page_nr } => {
-                let page = file.get_page(page_nr).expect("no such page");
-                let mut backend = SceneBackend::new(cache);
-                pdf_render::render_page(&mut backend, &file.resolver(), &page, Transform2F::default()).unwrap();
-                (backend.finish(), String::new())
-            }
         }
     }
 }
@@ -792,8 +779,6 @@ fn load_scene(resource_loader: &dyn ResourceLoader,
 
     if let Ok(tree) = SvgTree::from_data(&data, &UsvgOptions::default().to_ref()) {
         Content::Svg(tree)
-    } else if let Ok(file) = FileOptions::cached().load(data) {
-        Content::Pdf { file, cache: PdfRenderCache::new(), page_nr: 0 }
     } else {
         panic!("can't load data");
     }

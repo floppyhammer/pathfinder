@@ -21,4 +21,3 @@ pub mod perf;
 pub mod renderer;
 
 pub(crate) mod blend;
-pub(crate) mod shaders;

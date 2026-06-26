@@ -12,6 +12,9 @@ homepage = "https://github.com/servo/pathfinder"
 serde = "1.0"
 serde_derive = "1.0"
 serde_json = "1.0"
+wgpu = "29.0.3"
+image = "0.24"
+bytemuck = { version = "1.12", features = ["derive"] }
 
 [dependencies.hashbrown]
 version = "0.7"

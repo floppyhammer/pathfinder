@@ -31,9 +31,7 @@ include = [
     "pathfinder_canvas",
     "pathfinder_content",
     "pathfinder_geometry",
-    "pathfinder_gl",
     "pathfinder_gpu",
-    "pathfinder_metal",
     "pathfinder_renderer",
     "pathfinder_svg",
 ]

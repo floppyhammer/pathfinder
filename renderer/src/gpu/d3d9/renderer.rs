@@ -1,6 +1,6 @@
 // pathfinder/renderer/src/gpu/d3d9/renderer.rs
 //
-// Copyright © 2020 The Pathfinder Project Developers.
+// Copyright © 2026 The Pathfinder Project Developers.
 //
 // Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
 // http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -9,17 +9,9 @@
 // except according to those terms.
 
 //! A hybrid CPU-GPU renderer that only relies on functionality available in Direct3D 9.
-//! 
-//! This renderer supports OpenGL at least 3.0, OpenGL ES at least 3.0, Metal of any version, and
-//! WebGL at least 2.0.
 
-use crate::gpu::blend::{BlendModeExt, ToBlendState};
-use crate::gpu::perf::TimeCategory;
-use crate::gpu::renderer::{FramebufferFlags, MASK_FRAMEBUFFER_HEIGHT, MASK_FRAMEBUFFER_WIDTH};
-use crate::gpu::renderer::{RendererCore, RendererFlags};
-use crate::gpu::d3d9::shaders::{ClipTileCombineVertexArrayD3D9, ClipTileCopyVertexArrayD3D9};
-use crate::gpu::d3d9::shaders::{CopyTileVertexArray, FillVertexArrayD3D9};
-use crate::gpu::d3d9::shaders::{ProgramsD3D9, TileVertexArrayD3D9};
+use crate::gpu::renderer::RendererCore;
+use crate::gpu::renderer::{MaskStorageFlags, MASK_TEXTURE_HEIGHT, MASK_TEXTURE_WIDTH};
 use crate::gpu_data::{Clip, DrawTileBatchD3D9, Fill, TileBatchTexture, TileObjectPrimitive};
 use crate::tile_map::DenseTileMap;
 use crate::tiles::{TILE_HEIGHT, TILE_WIDTH};
@@ -28,21 +20,21 @@ use pathfinder_color::ColorF;
 use pathfinder_content::effects::BlendMode;
 use pathfinder_geometry::rect::RectI;
 use pathfinder_geometry::transform3d::Transform4F;
-use pathfinder_geometry::vector::{Vector2I, Vector4F, vec2i};
-use pathfinder_gpu::allocator::{BufferTag, FramebufferID, FramebufferTag, GeneralBufferID};
-use pathfinder_gpu::allocator::{IndexBufferID, TextureID, TextureTag};
-use pathfinder_gpu::{BlendFactor, BlendState, BufferTarget, ClearOps, Device, Primitive};
-use pathfinder_gpu::{RenderOptions, RenderState, RenderTarget, StencilFunc, StencilState};
-use pathfinder_gpu::{TextureDataRef, TextureFormat, UniformData};
+use pathfinder_geometry::vector::{vec2i, Vector2I, Vector4F};
+use pathfinder_gpu::allocator::{BufferTag, GeneralBufferID, IndexBufferID, TextureID, TextureTag};
 use pathfinder_resources::ResourceLoader;
-use pathfinder_simd::default::F32x2;
-use std::u32;
+use wgpu::util::DeviceExt;
+use crate::gpu::perf::TimeCategory;
 
 const MAX_FILLS_PER_BATCH: usize = 0x10000;
 
-pub(crate) struct RendererD3D9<D> where D: Device {
+pub(crate) struct RendererD3D9 {
     // Basic data
-    programs: ProgramsD3D9<D>,
+    fill_pipeline: wgpu::RenderPipeline,
+    tile_pipeline: wgpu::RenderPipeline,
+    // tile_clip_copy_pipeline: wgpu::RenderPipeline,
+    // tile_clip_combine_pipeline: wgpu::RenderPipeline,
+    // tile_copy_pipeline: wgpu::RenderPipeline,
     quads_vertex_indices_buffer_id: Option<IndexBufferID>,
     quads_vertex_indices_length: usize,
 
@@ -50,104 +42,140 @@ pub(crate) struct RendererD3D9<D> where D: Device {
     buffered_fills: Vec<Fill>,
     pending_fills: Vec<Fill>,
 
-    // Temporary framebuffers
-    dest_blend_framebuffer_id: FramebufferID,
+    // Temporary texture
+    dest_blend_texture_id: TextureID,
 }
 
-impl<D> RendererD3D9<D> where D: Device {
-    pub(crate) fn new(core: &mut RendererCore<D>, resources: &dyn ResourceLoader)
-                      -> RendererD3D9<D> {
-        let programs = ProgramsD3D9::new(&core.device, resources);
+impl RendererD3D9 {
+    pub(crate) fn new(core: &mut RendererCore, resources: &dyn ResourceLoader) -> RendererD3D9 {
+        let fill_pipeline = core
+            .device
+            .create_render_pipeline(resources, "d3d9/fill", None);
+        let tile_pipeline = core
+            .device
+            .create_render_pipeline(resources, "d3d9/tile", None);
+        // let tile_clip_combine_pipeline = core
+        //     .device
+        //     .create_render_pipeline(resources, "d3d9/tile_clip_combine", None);
+        // let tile_clip_copy_pipeline = core
+        //     .device
+        //     .create_render_pipeline(resources, "d3d9/tile_clip_copy", None);
+        // let tile_copy_pipeline = core
+        //     .device
+        //     .create_render_pipeline(resources, "d3d9/tile_copy", None);
 
         let window_size = core.options.dest.window_size(&core.device);
-        let dest_blend_framebuffer_id =
-            core.allocator.allocate_framebuffer(&core.device,
-                                                window_size,
-                                                TextureFormat::RGBA8,
-                                                FramebufferTag("DestBlendD3D9"));
+        let dest_blend_texture_id = core.allocator.allocate_texture(
+            &core.device,
+            window_size,
+            wgpu::TextureFormat::Rgba8Unorm,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            TextureTag("DestBlendD3D9"),
+        );
 
         RendererD3D9 {
-            programs,
+            fill_pipeline,
+            tile_pipeline,
+            // tile_clip_copy_pipeline,
+            // tile_clip_combine_pipeline,
+            // tile_copy_pipeline,
             quads_vertex_indices_buffer_id: None,
             quads_vertex_indices_length: 0,
 
             buffered_fills: vec![],
             pending_fills: vec![],
 
-            dest_blend_framebuffer_id,
+            dest_blend_texture_id,
         }
     }
 
-    pub(crate) fn upload_and_draw_tiles(&mut self,
-                                        core: &mut RendererCore<D>,
-                                        batch: &DrawTileBatchD3D9) {
-        if !batch.clips.is_empty() {
-            let clip_buffer_info = self.upload_clip_tiles(core, &batch.clips);
-            self.clip_tiles(core, &clip_buffer_info);
-            core.allocator.free_general_buffer(clip_buffer_info.clip_buffer_id);
-        }
+    pub(crate) fn upload_and_draw_tiles(
+        &mut self,
+        core: &mut RendererCore,
+        batch: &DrawTileBatchD3D9,
+    ) {
+        // if !batch.clips.is_empty() {
+        //     let clip_buffer_info = self.upload_clip_tiles(core, &batch.clips);
+        //     self.clip_tiles(core, &clip_buffer_info);
+        //     core.allocator
+        //         .free_general_buffer(clip_buffer_info.clip_buffer_id);
+        // }
 
         let tile_buffer = self.upload_tiles(core, &batch.tiles);
         let z_buffer_texture_id = self.upload_z_buffer(core, &batch.z_buffer_data);
 
-        self.draw_tiles(core,
-                        batch.tiles.len() as u32,
-                        tile_buffer.tile_vertex_buffer_id,
-                        batch.color_texture,
-                        batch.blend_mode,
-                        z_buffer_texture_id);
+        self.draw_tiles(
+            core,
+            batch.tiles.len() as u32,
+            tile_buffer.tile_vertex_buffer_id,
+            batch.color_texture,
+            batch.blend_mode,
+            z_buffer_texture_id,
+        );
 
         core.allocator.free_texture(z_buffer_texture_id);
-        core.allocator.free_general_buffer(tile_buffer.tile_vertex_buffer_id);
+        core.allocator
+            .free_general_buffer(tile_buffer.tile_vertex_buffer_id);
     }
 
-    fn upload_tiles(&mut self, core: &mut RendererCore<D>, tiles: &[TileObjectPrimitive])
-                    -> TileBufferD3D9 {
-        let tile_vertex_buffer_id =
-            core.allocator.allocate_general_buffer::<TileObjectPrimitive>(&core.device,
-                                                                          tiles.len() as u64,
-                                                                          BufferTag("TileD3D9"));
+    fn upload_tiles(
+        &mut self,
+        core: &mut RendererCore,
+        tiles: &[TileObjectPrimitive],
+    ) -> TileBufferD3D9 {
+        let tile_vertex_buffer_id = core
+            .allocator
+            .allocate_general_buffer::<TileObjectPrimitive>(
+                &core.device,
+                tiles.len() as u64,
+                BufferTag("TileD3D9"),
+            );
         let tile_vertex_buffer = &core.allocator.get_general_buffer(tile_vertex_buffer_id);
-        core.device.upload_to_buffer(tile_vertex_buffer, 0, tiles, BufferTarget::Vertex);
+        core.device.upload_to_buffer(tile_vertex_buffer, 0, tiles);
         self.ensure_index_buffer(core, tiles.len());
 
-        TileBufferD3D9 { tile_vertex_buffer_id }
+        TileBufferD3D9 {
+            tile_vertex_buffer_id,
+        }
     }
 
-
-    fn ensure_index_buffer(&mut self, core: &mut RendererCore<D>, mut length: usize) {
+    fn ensure_index_buffer(&mut self, core: &mut RendererCore, mut length: usize) {
         length = length.next_power_of_two();
         if self.quads_vertex_indices_length >= length {
             return;
         }
 
-        // TODO(pcwalton): Generate these with SIMD.
         let mut indices: Vec<u32> = Vec::with_capacity(length * 6);
         for index in 0..(length as u32) {
             indices.extend_from_slice(&[
-                index * 4 + 0, index * 4 + 1, index * 4 + 2,
-                index * 4 + 1, index * 4 + 3, index * 4 + 2,
+                index * 4 + 0,
+                index * 4 + 1,
+                index * 4 + 2,
+                index * 4 + 1,
+                index * 4 + 3,
+                index * 4 + 2,
             ]);
         }
 
         if let Some(quads_vertex_indices_buffer_id) = self.quads_vertex_indices_buffer_id.take() {
-            core.allocator.free_index_buffer(quads_vertex_indices_buffer_id);
+            core.allocator
+                .free_index_buffer(quads_vertex_indices_buffer_id);
         }
-        let quads_vertex_indices_buffer_id =
-            core.allocator.allocate_index_buffer::<u32>(&core.device,
-                                                        indices.len() as u64,
-                                                        BufferTag("QuadsVertexIndicesD3D9"));
-        let quads_vertex_indices_buffer =
-            core.allocator.get_index_buffer(quads_vertex_indices_buffer_id);
-        core.device.upload_to_buffer(quads_vertex_indices_buffer,
-                                     0,
-                                     &indices,
-                                     BufferTarget::Index);
+        let quads_vertex_indices_buffer_id = core.allocator.allocate_index_buffer::<u32>(
+            &core.device,
+            indices.len() as u64,
+            BufferTag("QuadsVertexIndicesD3D9"),
+        );
+        let quads_vertex_indices_buffer = core
+            .allocator
+            .get_index_buffer(quads_vertex_indices_buffer_id);
+        core.device
+            .upload_to_buffer(quads_vertex_indices_buffer, 0, &indices);
         self.quads_vertex_indices_buffer_id = Some(quads_vertex_indices_buffer_id);
         self.quads_vertex_indices_length = length;
     }
 
-    pub(crate) fn add_fills(&mut self, core: &mut RendererCore<D>, fill_batch: &[Fill]) {
+    pub(crate) fn add_fills(&mut self, core: &mut RendererCore, fill_batch: &[Fill]) {
         if fill_batch.is_empty() {
             return;
         }
@@ -173,387 +201,651 @@ impl<D> RendererD3D9<D> where D: Device {
         self.buffered_fills.extend(self.pending_fills.drain(..));
     }
 
-    pub(crate) fn draw_buffered_fills(&mut self, core: &mut RendererCore<D>) {
+    pub(crate) fn draw_buffered_fills(&mut self, core: &mut RendererCore) {
         if self.buffered_fills.is_empty() {
             return;
         }
 
         let fill_storage_info = self.upload_buffered_fills(core);
-        self.draw_fills(core, fill_storage_info.fill_buffer_id, fill_storage_info.fill_count);
-        core.allocator.free_general_buffer(fill_storage_info.fill_buffer_id);
+        self.draw_fills(
+            core,
+            fill_storage_info.fill_buffer_id,
+            fill_storage_info.fill_count,
+        );
+        core.allocator
+            .free_general_buffer(fill_storage_info.fill_buffer_id);
     }
 
-    fn upload_buffered_fills(&mut self, core: &mut RendererCore<D>) -> FillBufferInfoD3D9 {
+    fn upload_buffered_fills(&mut self, core: &mut RendererCore) -> FillBufferInfoD3D9 {
         let buffered_fills = &mut self.buffered_fills;
         debug_assert!(!buffered_fills.is_empty());
 
-        let fill_buffer_id = core.allocator
-                                 .allocate_general_buffer::<Fill>(&core.device,
-                                                                  MAX_FILLS_PER_BATCH as u64,
-                                                                  BufferTag("Fill"));
+        let fill_buffer_id = core.allocator.allocate_general_buffer::<Fill>(
+            &core.device,
+            MAX_FILLS_PER_BATCH as u64,
+            BufferTag("Fill"),
+        );
         let fill_vertex_buffer = core.allocator.get_general_buffer(fill_buffer_id);
         debug_assert!(buffered_fills.len() <= u32::MAX as usize);
-        core.device.upload_to_buffer(fill_vertex_buffer, 0, &buffered_fills, BufferTarget::Vertex);
+        core.device
+            .upload_to_buffer(fill_vertex_buffer, 0, &buffered_fills);
 
         let fill_count = buffered_fills.len() as u32;
         buffered_fills.clear();
 
-        FillBufferInfoD3D9 { fill_buffer_id, fill_count }
+        FillBufferInfoD3D9 {
+            fill_buffer_id,
+            fill_count,
+        }
     }
 
-    fn draw_fills(&mut self,
-                  core: &mut RendererCore<D>,
-                  fill_buffer_id: GeneralBufferID,
-                  fill_count: u32) {
-        let fill_raster_program = &self.programs.fill_program;
-
+    fn draw_fills(
+        &mut self,
+        core: &mut RendererCore,
+        fill_buffer_id: GeneralBufferID,
+        fill_count: u32,
+    ) {
         let fill_vertex_buffer = core.allocator.get_general_buffer(fill_buffer_id);
-        let quad_vertex_positions_buffer =
-            core.allocator.get_general_buffer(core.quad_vertex_positions_buffer_id);
-        let quad_vertex_indices_buffer = core.allocator
-                                             .get_index_buffer(core.quad_vertex_indices_buffer_id);
+        let quad_vertex_positions_buffer = core
+            .allocator
+            .get_general_buffer(core.quad_vertex_positions_buffer_id);
+        let quad_vertex_indices_buffer = core
+            .allocator
+            .get_index_buffer(core.quad_vertex_indices_buffer_id);
 
         let area_lut_texture = core.allocator.get_texture(core.area_lut_texture_id);
 
         let mask_viewport = self.mask_viewport(core);
-        let mask_storage = core.mask_storage.as_ref().expect("Where's the mask storage?");
-        let mask_framebuffer_id = mask_storage.framebuffer_id;
-        let mask_framebuffer = core.allocator.get_framebuffer(mask_framebuffer_id);
-
-        let fill_vertex_array = FillVertexArrayD3D9::new(&core.device,
-                                                         fill_raster_program,
-                                                         fill_vertex_buffer,
-                                                         quad_vertex_positions_buffer,
-                                                         quad_vertex_indices_buffer);
+        let mask_storage = core
+            .mask_storage
+            .as_ref()
+            .expect("Where's the mask storage?");
+        let mask_texture_id = mask_storage.texture_id;
+        let mask_texture = core.allocator.get_texture(mask_texture_id);
 
         let mut clear_color = None;
-        if !core.framebuffer_flags.contains(FramebufferFlags::MASK_FRAMEBUFFER_IS_DIRTY) {
+        if !core
+            .mask_storage_flags
+            .contains(MaskStorageFlags::MASK_TEXTURE_IS_DIRTY)
+        {
             clear_color = Some(ColorF::default());
         };
 
-        let timer_query = core.timer_query_cache.start_timing_draw_call(&core.device,
-                                                                        &core.options);
+        let mut timer_query = core
+            .timer_query_cache
+            .start_timing_draw_call(&core.device, &core.options);
 
-        core.device.draw_elements_instanced(6, fill_count, &RenderState {
-            target: &RenderTarget::Framebuffer(mask_framebuffer),
-            program: &fill_raster_program.program,
-            vertex_array: &fill_vertex_array.vertex_array,
-            primitive: Primitive::Triangles,
-            textures: &[(&fill_raster_program.area_lut_texture, area_lut_texture)],
-            uniforms: &[
-                (&fill_raster_program.framebuffer_size_uniform,
-                 UniformData::Vec2(mask_viewport.size().to_f32().0)),
-                (&fill_raster_program.tile_size_uniform,
-                 UniformData::Vec2(F32x2::new(TILE_WIDTH as f32, TILE_HEIGHT as f32))),
+        // Prepare uniforms
+        #[repr(C)]
+        #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+        struct FillGlobals {
+            tile_size: [f32; 2],
+            mask_size: [f32; 2],
+        }
+
+        let globals = FillGlobals {
+            tile_size: [TILE_WIDTH as f32, TILE_HEIGHT as f32],
+            mask_size: [
+                mask_viewport.size().x() as f32,
+                mask_viewport.size().y() as f32,
             ],
-            images: &[],
-            storage_buffers: &[],
-            viewport: mask_viewport,
-            options: RenderOptions {
-                blend: Some(BlendState {
-                    src_rgb_factor: BlendFactor::One,
-                    src_alpha_factor: BlendFactor::One,
-                    dest_rgb_factor: BlendFactor::One,
-                    dest_alpha_factor: BlendFactor::One,
-                    ..BlendState::default()
-                }),
-                clear_ops: ClearOps { color: clear_color, ..ClearOps::default() },
-                ..RenderOptions::default()
-            },
-        });
+        };
+
+        let globals_buffer =
+            core.device
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Fill Globals"),
+                    contents: bytemuck::cast_slice(&[globals]),
+                    usage: wgpu::BufferUsages::UNIFORM,
+                });
+
+        let area_lut_view = &area_lut_texture.view;
+        let sampler = core
+            .device
+            .device
+            .create_sampler(&wgpu::SamplerDescriptor::default());
+
+        let bind_group = core
+            .device
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &self.fill_pipeline.get_bind_group_layout(0),
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: globals_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(area_lut_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&sampler),
+                    },
+                ],
+            });
+
+        let mut encoder =
+            core.device
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Fill Encoder"),
+                });
+
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Fill Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &mask_texture.view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: match clear_color {
+                            Some(c) => wgpu::LoadOp::Clear(wgpu::Color {
+                                r: c.r() as f64,
+                                g: c.g() as f64,
+                                b: c.b() as f64,
+                                a: c.a() as f64,
+                            }),
+                            None => wgpu::LoadOp::Load,
+                        },
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+
+            render_pass.set_pipeline(&self.fill_pipeline);
+            render_pass.set_bind_group(0, &bind_group, &[]);
+            render_pass.set_vertex_buffer(0, quad_vertex_positions_buffer.slice(..));
+            render_pass.set_vertex_buffer(1, fill_vertex_buffer.slice(..));
+            render_pass.set_index_buffer(
+                quad_vertex_indices_buffer.slice(..),
+                wgpu::IndexFormat::Uint32,
+            );
+            render_pass.set_viewport(
+                0.0,
+                0.0,
+                mask_viewport.size().x() as f32,
+                mask_viewport.size().y() as f32,
+                0.0,
+                1.0,
+            );
+            render_pass.draw_indexed(0..6, 0, 0..fill_count);
+        }
+
+        core.device.queue.submit(Some(encoder.finish()));
 
         core.stats.drawcall_count += 1;
-        core.finish_timing_draw_call(&timer_query);
-        core.current_timer.as_mut().unwrap().push_query(TimeCategory::Fill, timer_query);
-
-        core.framebuffer_flags.insert(FramebufferFlags::MASK_FRAMEBUFFER_IS_DIRTY);
+        core.finish_timing_draw_call(&mut timer_query);
+        core.current_timer
+            .as_mut()
+            .unwrap()
+            .push_query(TimeCategory::Fill, timer_query);
+        core.mask_storage_flags
+            .insert(MaskStorageFlags::MASK_TEXTURE_IS_DIRTY);
     }
 
-    fn clip_tiles(&mut self, core: &mut RendererCore<D>, clip_buffer_info: &ClipBufferInfo) {
-        // Allocate temp mask framebuffer.
-        let mask_temp_framebuffer_id =
-            core.allocator.allocate_framebuffer(&core.device,
-                                                self.mask_viewport(core).size(),
-                                                core.mask_texture_format(),
-                                                FramebufferTag("TempClipMaskD3D9"));
-        let mask_temp_framebuffer = core.allocator.get_framebuffer(mask_temp_framebuffer_id);
+    // fn clip_tiles(&mut self, core: &mut RendererCore, clip_buffer_info: &ClipBufferInfo) {
+    //     let device = &core.device.device;
+    //     let mask_viewport = self.mask_viewport(core);
+    //
+    //     #[repr(C)]
+    //     #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+    //     struct ClipGlobals {
+    //         framebuffer_size: [f32; 2],
+    //     }
+    //
+    //     let globals = ClipGlobals {
+    //         framebuffer_size: [
+    //             mask_viewport.size().x() as f32,
+    //             mask_viewport.size().y() as f32,
+    //         ],
+    //     };
+    //
+    //     let globals_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    //         label: Some("Clip Globals"),
+    //         contents: bytemuck::cast_slice(&[globals]),
+    //         usage: wgpu::BufferUsages::UNIFORM,
+    //     });
+    //
+    //     let mask_storage = core
+    //         .mask_storage
+    //         .as_ref()
+    //         .expect("Where's the mask storage?");
+    //     let mask_framebuffer = core.allocator.get_texture(mask_storage.texture_id);
+    //     let mask_render_view = mask_framebuffer.create_default_view();
+    //     let mask_sample_view = mask_framebuffer.create_default_view();
+    //     let sampler = core
+    //         .device
+    //         .device
+    //         .create_sampler(&wgpu::SamplerDescriptor::default());
+    //     let clip_buffer = core
+    //         .allocator
+    //         .get_general_buffer(clip_buffer_info.clip_buffer_id);
+    //     let quad_vertex_positions_buffer = core
+    //         .allocator
+    //         .get_general_buffer(core.quad_vertex_positions_buffer_id);
+    //     let quad_vertex_indices_buffer = core
+    //         .allocator
+    //         .get_index_buffer(core.quad_vertex_indices_buffer_id);
+    //
+    //     // 1. Copy tiles
+    //     {
+    //         let copy_pipeline = &self.tile_clip_copy_pipeline;
+    //         let bind_group_0 = core
+    //             .device
+    //             .device
+    //             .create_bind_group(&wgpu::BindGroupDescriptor {
+    //                 label: None,
+    //                 layout: &copy_pipeline.get_bind_group_layout(0),
+    //                 entries: &[wgpu::BindGroupEntry {
+    //                     binding: 0,
+    //                     resource: globals_buffer.as_entire_binding(),
+    //                 }],
+    //             });
+    //         let bind_group_1 = core
+    //             .device
+    //             .device
+    //             .create_bind_group(&wgpu::BindGroupDescriptor {
+    //                 label: None,
+    //                 layout: &copy_pipeline.get_bind_group_layout(1),
+    //                 entries: &[
+    //                     wgpu::BindGroupEntry {
+    //                         binding: 0,
+    //                         resource: wgpu::BindingResource::TextureView(&mask_sample_view),
+    //                     },
+    //                     wgpu::BindGroupEntry {
+    //                         binding: 1,
+    //                         resource: wgpu::BindingResource::Sampler(&sampler),
+    //                     },
+    //                 ],
+    //             });
+    //
+    //         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+    //             label: Some("Clip Copy Encoder"),
+    //         });
+    //         {
+    //             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+    //                 label: Some("Clip Copy Pass"),
+    //                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+    //                     view: &mask_render_view,
+    //                     resolve_target: None,
+    //                     ops: wgpu::Operations {
+    //                         load: wgpu::LoadOp::Load,
+    //                         store: wgpu::StoreOp::Store,
+    //                     },
+    //                     depth_slice: None,
+    //                 })],
+    //                 depth_stencil_attachment: None,
+    //                 timestamp_writes: None,
+    //                 occlusion_query_set: None,
+    //                 multiview_mask: None,
+    //             });
+    //
+    //             render_pass.set_pipeline(&copy_pipeline);
+    //             render_pass.set_bind_group(0, &bind_group_0, &[]);
+    //             render_pass.set_bind_group(1, &bind_group_1, &[]);
+    //             render_pass.set_vertex_buffer(0, quad_vertex_positions_buffer.slice(..));
+    //             render_pass.set_vertex_buffer(1, clip_buffer.slice(..));
+    //             render_pass.set_index_buffer(
+    //                 quad_vertex_indices_buffer.slice(..),
+    //                 wgpu::IndexFormat::Uint32,
+    //             );
+    //             render_pass.draw_indexed(0..6, 0, 0..clip_buffer_info.clip_count);
+    //         }
+    //         core.device.queue.submit(Some(encoder.finish()));
+    //     }
+    //
+    //     // 2. Combine tiles
+    //     {
+    //         let combine_pipeline = &self.tile_clip_combine_pipeline;
+    //         let bind_group_0 = core
+    //             .device
+    //             .device
+    //             .create_bind_group(&wgpu::BindGroupDescriptor {
+    //                 label: None,
+    //                 layout: &combine_pipeline.get_bind_group_layout(0),
+    //                 entries: &[wgpu::BindGroupEntry {
+    //                     binding: 0,
+    //                     resource: globals_buffer.as_entire_binding(),
+    //                 }],
+    //             });
+    //         let bind_group_1 = core
+    //             .device
+    //             .device
+    //             .create_bind_group(&wgpu::BindGroupDescriptor {
+    //                 label: None,
+    //                 layout: &combine_pipeline.get_bind_group_layout(1),
+    //                 entries: &[
+    //                     wgpu::BindGroupEntry {
+    //                         binding: 0,
+    //                         resource: wgpu::BindingResource::TextureView(&mask_sample_view),
+    //                     },
+    //                     wgpu::BindGroupEntry {
+    //                         binding: 1,
+    //                         resource: wgpu::BindingResource::Sampler(&sampler),
+    //                     },
+    //                 ],
+    //             });
+    //
+    //         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+    //             label: Some("Clip Combine Encoder"),
+    //         });
+    //         {
+    //             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+    //                 label: Some("Clip Combine Pass"),
+    //                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+    //                     view: &mask_render_view,
+    //                     resolve_target: None,
+    //                     ops: wgpu::Operations {
+    //                         load: wgpu::LoadOp::Load,
+    //                         store: wgpu::StoreOp::Store,
+    //                     },
+    //                     depth_slice: None,
+    //                 })],
+    //                 depth_stencil_attachment: None,
+    //                 timestamp_writes: None,
+    //                 occlusion_query_set: None,
+    //                 multiview_mask: None,
+    //             });
+    //
+    //             render_pass.set_pipeline(&combine_pipeline);
+    //             render_pass.set_bind_group(0, &bind_group_0, &[]);
+    //             render_pass.set_bind_group(1, &bind_group_1, &[]);
+    //             render_pass.set_vertex_buffer(0, quad_vertex_positions_buffer.slice(..));
+    //             render_pass.set_vertex_buffer(1, clip_buffer.slice(..));
+    //             render_pass.set_index_buffer(
+    //                 quad_vertex_indices_buffer.slice(..),
+    //                 wgpu::IndexFormat::Uint32,
+    //             );
+    //             render_pass.draw_indexed(0..6, 0, 0..clip_buffer_info.clip_count);
+    //         }
+    //         core.device.queue.submit(Some(encoder.finish()));
+    //     }
+    //
+    //     core.stats.drawcall_count += 2;
+    // }
 
-        let mask_storage = core.mask_storage.as_ref().expect("Where's the mask storage?");
-        let mask_framebuffer_id = mask_storage.framebuffer_id;
-        let mask_framebuffer = core.allocator.get_framebuffer(mask_framebuffer_id);
-        let mask_texture = core.device.framebuffer_texture(mask_framebuffer);
-        let mask_texture_size = core.device.texture_size(&mask_texture);
-
-        let clip_vertex_buffer = core.allocator
-                                     .get_general_buffer(clip_buffer_info.clip_buffer_id);
-        let quad_vertex_positions_buffer =
-            core.allocator.get_general_buffer(core.quad_vertex_positions_buffer_id);
-        let quad_vertex_indices_buffer = core.allocator
-                                             .get_index_buffer(core.quad_vertex_indices_buffer_id);
-
-        let tile_clip_copy_vertex_array =   
-            ClipTileCopyVertexArrayD3D9::new(&core.device,
-                                             &self.programs.tile_clip_copy_program,
-                                             clip_vertex_buffer,
-                                             quad_vertex_positions_buffer,
-                                             quad_vertex_indices_buffer);
-        let tile_clip_combine_vertex_array =   
-            ClipTileCombineVertexArrayD3D9::new(&core.device,
-                                                &self.programs.tile_clip_combine_program,
-                                                clip_vertex_buffer,
-                                                quad_vertex_positions_buffer,
-                                                quad_vertex_indices_buffer);
-
-        let timer_query = core.timer_query_cache.start_timing_draw_call(&core.device,
-                                                                        &core.options);
-
-        // Copy out tiles.
-        //
-        // TODO(pcwalton): Don't do this on GL4.
-        core.device.draw_elements_instanced(6, clip_buffer_info.clip_count * 2, &RenderState {
-            target: &RenderTarget::Framebuffer(mask_temp_framebuffer),
-            program: &self.programs.tile_clip_copy_program.program,
-            vertex_array: &tile_clip_copy_vertex_array.vertex_array,
-            primitive: Primitive::Triangles,
-            textures: &[
-                (&self.programs.tile_clip_copy_program.src_texture,
-                 core.device.framebuffer_texture(mask_framebuffer)),
-            ],
-            images: &[],
-            uniforms: &[
-                (&self.programs.tile_clip_copy_program.framebuffer_size_uniform,
-                 UniformData::Vec2(mask_texture_size.to_f32().0)),
-            ],
-            storage_buffers: &[],
-            viewport: RectI::new(Vector2I::zero(), mask_texture_size),
-            options: RenderOptions::default(),
-        });
-
-        core.stats.drawcall_count += 1;
-        core.finish_timing_draw_call(&timer_query);
-        core.current_timer.as_mut().unwrap().push_query(TimeCategory::Other, timer_query);
-        let timer_query = core.timer_query_cache.start_timing_draw_call(&core.device,
-                                                                        &core.options);
-
-        // Combine clip tiles.
-        core.device.draw_elements_instanced(6, clip_buffer_info.clip_count, &RenderState {
-            target: &RenderTarget::Framebuffer(mask_framebuffer),
-            program: &self.programs.tile_clip_combine_program.program,
-            vertex_array: &tile_clip_combine_vertex_array.vertex_array,
-            primitive: Primitive::Triangles,
-            textures: &[
-                (&self.programs.tile_clip_combine_program.src_texture,
-                 core.device.framebuffer_texture(&mask_temp_framebuffer)),
-            ],
-            images: &[],
-            uniforms: &[
-                (&self.programs.tile_clip_combine_program.framebuffer_size_uniform,
-                 UniformData::Vec2(mask_texture_size.to_f32().0)),
-            ],
-            storage_buffers: &[],
-            viewport: RectI::new(Vector2I::zero(), mask_texture_size),
-            options: RenderOptions::default(),
-        });
-
-        core.stats.drawcall_count += 1;
-        core.finish_timing_draw_call(&timer_query);
-        core.current_timer.as_mut().unwrap().push_query(TimeCategory::Other, timer_query);
-
-        core.allocator.free_framebuffer(mask_temp_framebuffer_id);
-    }
-
-    fn upload_z_buffer(&mut self, core: &mut RendererCore<D>, z_buffer_map: &DenseTileMap<i32>)
-                       -> TextureID {
-        let z_buffer_texture_id = core.allocator.allocate_texture(&core.device,
-                                                                  z_buffer_map.rect.size(),
-                                                                  TextureFormat::RGBA8,
-                                                                  TextureTag("ZBufferD3D9"));
+    fn upload_z_buffer(
+        &mut self,
+        core: &mut RendererCore,
+        z_buffer_map: &DenseTileMap<i32>,
+    ) -> TextureID {
+        let z_buffer_texture_id = core.allocator.allocate_texture(
+            &core.device,
+            z_buffer_map.rect.size(),
+            wgpu::TextureFormat::Rgba8Unorm,
+            wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+            TextureTag("ZBufferD3D9"),
+        );
         let z_buffer_texture = core.allocator.get_texture(z_buffer_texture_id);
         debug_assert_eq!(z_buffer_map.rect.origin(), Vector2I::default());
         let z_data: &[u8] = z_buffer_map.data.as_byte_slice();
-        core.device.upload_to_texture(z_buffer_texture,
-                                      z_buffer_map.rect,
-                                      TextureDataRef::U8(&z_data));
+        core.device.upload_to_texture(
+            z_buffer_texture,
+            z_buffer_map.rect,
+            pathfinder_gpu::TextureDataRef::U8(&z_data),
+        );
         z_buffer_texture_id
     }
 
-    // Uploads clip tiles from CPU to GPU.
-    fn upload_clip_tiles(&mut self, core: &mut RendererCore<D>, clips: &[Clip]) -> ClipBufferInfo {
-        let clip_buffer_id = core.allocator.allocate_general_buffer::<Clip>(&core.device,
-                                                                            clips.len() as u64,
-                                                                            BufferTag("ClipD3D9"));
+    fn upload_clip_tiles(&mut self, core: &mut RendererCore, clips: &[Clip]) -> ClipBufferInfo {
+        let clip_buffer_id = core.allocator.allocate_general_buffer::<Clip>(
+            &core.device,
+            clips.len() as u64,
+            BufferTag("ClipD3D9"),
+        );
         let clip_buffer = core.allocator.get_general_buffer(clip_buffer_id);
-        core.device.upload_to_buffer(clip_buffer, 0, clips, BufferTarget::Vertex);
-        ClipBufferInfo { clip_buffer_id, clip_count: clips.len() as u32 }
+        core.device.upload_to_buffer(clip_buffer, 0, clips);
+        ClipBufferInfo {
+            clip_buffer_id,
+            clip_count: clips.len() as u32,
+        }
     }
 
-    fn draw_tiles(&mut self,
-                  core: &mut RendererCore<D>,
-                  tile_count: u32,
-                  tile_vertex_buffer_id: GeneralBufferID,
-                  color_texture_0: Option<TileBatchTexture>,
-                  blend_mode: BlendMode,
-                  z_buffer_texture_id: TextureID) {
-        // TODO(pcwalton): Disable blend for solid tiles.
-
+    fn draw_tiles(
+        &mut self,
+        core: &mut RendererCore,
+        tile_count: u32,
+        tile_vertex_buffer_id: GeneralBufferID,
+        _color_texture_0: Option<TileBatchTexture>,
+        _blend_mode: BlendMode,
+        z_buffer_texture_id: TextureID,
+    ) {
         if tile_count == 0 {
             return;
         }
 
-        core.stats.total_tile_count += tile_count as usize;
+        let mut timer_query = core
+            .timer_query_cache
+            .start_timing_draw_call(&core.device, &core.options);
 
-        let needs_readable_framebuffer = blend_mode.needs_readable_framebuffer();
-        if needs_readable_framebuffer {
-            self.copy_alpha_tiles_to_dest_blend_texture(core, tile_count, tile_vertex_buffer_id);
+        let tile_pipeline = &self.tile_pipeline;
+        let device = &core.device.device;
+
+        // 1. Prepare Tile Globals
+        #[repr(C)]
+        #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+        struct TileGlobals {
+            tile_size: [f32; 2],
+            texture_metadata_size: [i32; 2],
+            z_buffer_size: [i32; 2],
+            mask_texture_size0: [f32; 2],
+            color_texture_size0: [f32; 2],
+            framebuffer_size: [f32; 2],
+            transform: [f32; 16],
         }
 
-        let clear_color = core.clear_color_for_draw_operation();
+        let transform = self.tile_transform(core);
         let draw_viewport = core.draw_viewport();
+        let mask_viewport = self.mask_viewport(core);
 
-        let timer_query = core.timer_query_cache.start_timing_draw_call(&core.device,
-                                                                        &core.options);
-
-        let tile_raster_program = &self.programs.tile_program;
-
-        let tile_vertex_buffer = core.allocator.get_general_buffer(tile_vertex_buffer_id);
-        let quad_vertex_positions_buffer =
-            core.allocator.get_general_buffer(core.quad_vertex_positions_buffer_id);
-        let quad_vertex_indices_buffer = core.allocator
-                                             .get_index_buffer(core.quad_vertex_indices_buffer_id);
-        let dest_blend_framebuffer = core.allocator
-                                         .get_framebuffer(self.dest_blend_framebuffer_id);
-
-        let (mut textures, mut uniforms) = (vec![], vec![]);
-
-        core.set_uniforms_for_drawing_tiles(&tile_raster_program.common,
-                                            &mut textures,
-                                            &mut uniforms,
-                                            color_texture_0);
-
-        uniforms.push((&tile_raster_program.transform_uniform,
-                       UniformData::Mat4(self.tile_transform(core).to_columns())));
-        textures.push((&tile_raster_program.dest_texture,
-                        core.device.framebuffer_texture(dest_blend_framebuffer)));
-
+        let metadata_texture = core.allocator.get_texture(core.texture_metadata_texture_id);
         let z_buffer_texture = core.allocator.get_texture(z_buffer_texture_id);
-        textures.push((&tile_raster_program.common.z_buffer_texture, z_buffer_texture));
-        uniforms.push((&tile_raster_program.common.z_buffer_texture_size_uniform,
-                       UniformData::IVec2(core.device.texture_size(z_buffer_texture).0)));
 
-        let tile_vertex_array = TileVertexArrayD3D9::new(&core.device,
-                                                         &self.programs.tile_program,
-                                                         tile_vertex_buffer,
-                                                         quad_vertex_positions_buffer,
-                                                         quad_vertex_indices_buffer);
+        let globals = TileGlobals {
+            transform: [
+                transform.c0.x(),
+                transform.c0.y(),
+                transform.c0.z(),
+                transform.c0.w(),
+                transform.c1.x(),
+                transform.c1.y(),
+                transform.c1.z(),
+                transform.c1.w(),
+                transform.c2.x(),
+                transform.c2.y(),
+                transform.c2.z(),
+                transform.c2.w(),
+                transform.c3.x(),
+                transform.c3.y(),
+                transform.c3.z(),
+                transform.c3.w(),
+            ],
+            tile_size: [TILE_WIDTH as f32, TILE_HEIGHT as i32 as f32],
+            framebuffer_size: [
+                draw_viewport.size().x() as f32,
+                draw_viewport.size().y() as f32,
+            ],
+            texture_metadata_size: [1024, 1024], // Placeholder
+            z_buffer_size: [z_buffer_texture.size.x(), z_buffer_texture.size.y()],
+            color_texture_size0: [1024.0, 1024.0], // Placeholder
+            mask_texture_size0: [
+                mask_viewport.size().x() as f32,
+                mask_viewport.size().y() as f32,
+            ],
+        };
 
-        core.device.draw_elements_instanced(6, tile_count, &RenderState {
-            target: &core.draw_render_target(),
-            program: &tile_raster_program.common.program,
-            vertex_array: &tile_vertex_array.vertex_array,
-            primitive: Primitive::Triangles,
-            textures: &textures,
-            images: &[],
-            storage_buffers: &[],
-            uniforms: &uniforms,
-            viewport: draw_viewport,
-            options: RenderOptions {
-                blend: blend_mode.to_blend_state(),
-                stencil: self.stencil_state(core),
-                clear_ops: ClearOps { color: clear_color, ..ClearOps::default() },
-                ..RenderOptions::default()
-            },
+        let globals_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Tile Globals"),
+            contents: bytemuck::cast_slice(&[globals]),
+            usage: wgpu::BufferUsages::UNIFORM,
         });
 
-        core.stats.drawcall_count += 1;
-        core.finish_timing_draw_call(&timer_query);
-        core.current_timer.as_mut().unwrap().push_query(TimeCategory::Composite, timer_query);
+        // 2. Create Bind Groups
+        let bind_group_0 = core
+            .device
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &tile_pipeline.get_bind_group_layout(0),
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: globals_buffer.as_entire_binding(),
+                }],
+            });
 
+        let sampler = core
+            .device
+            .device
+            .create_sampler(&wgpu::SamplerDescriptor::default());
+        let mask_storage = core.mask_storage.as_ref().unwrap();
+        let mask_texture = core.allocator.get_texture(mask_storage.texture_id);
+        let gamma_lut_texture = core.allocator.get_texture(core.gamma_lut_texture_id);
+
+        let bind_group_1 = core
+            .device
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &tile_pipeline.get_bind_group_layout(1),
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&metadata_texture.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&z_buffer_texture.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(&z_buffer_texture.view),
+                    }, // Placeholder for ColorTexture
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(&mask_texture.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(&mask_texture.view),
+                    }, // Placeholder for DestTexture
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::TextureView(&gamma_lut_texture.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: wgpu::BindingResource::Sampler(&sampler),
+                    },
+                ],
+            });
+
+        // 3. Draw
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Tile Encoder"),
+        });
+        {
+            let dest_texture = core
+                .allocator
+                .get_texture(core.intermediate_dest_texture_id);
+
+            let clear_color = core.clear_color_for_draw_operation();
+            let load_op = if let Some(color) = clear_color {
+                wgpu::LoadOp::Clear(wgpu::Color {
+                    r: color.r() as f64,
+                    g: color.g() as f64,
+                    b: color.b() as f64,
+                    a: color.a() as f64,
+                })
+            } else {
+                wgpu::LoadOp::Load
+            };
+
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Tile Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &dest_texture.view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: load_op,
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+
+            render_pass.set_pipeline(&tile_pipeline);
+            render_pass.set_bind_group(0, &bind_group_0, &[]);
+            render_pass.set_bind_group(1, &bind_group_1, &[]);
+
+            let tile_vertex_buffer = core.allocator.get_general_buffer(tile_vertex_buffer_id);
+            let quad_vertex_positions_buffer = core
+                .allocator
+                .get_general_buffer(core.quad_vertex_positions_buffer_id);
+            let quad_vertex_indices_buffer = core
+                .allocator
+                .get_index_buffer(core.quad_vertex_indices_buffer_id);
+
+            render_pass.set_vertex_buffer(0, quad_vertex_positions_buffer.slice(..));
+            render_pass.set_vertex_buffer(1, tile_vertex_buffer.slice(..));
+            render_pass.set_index_buffer(
+                quad_vertex_indices_buffer.slice(..),
+                wgpu::IndexFormat::Uint32,
+            );
+            render_pass.set_viewport(
+                0.0,
+                0.0,
+                draw_viewport.size().x() as f32,
+                draw_viewport.size().y() as f32,
+                0.0,
+                1.0,
+            );
+            render_pass.draw_indexed(0..6, 0, 0..tile_count);
+        }
+
+        core.device.queue.submit(Some(encoder.finish()));
+
+        core.stats.total_tile_count += tile_count as usize;
+        core.stats.drawcall_count += 1;
+        core.finish_timing_draw_call(&mut timer_query);
+        core.current_timer
+            .as_mut()
+            .unwrap()
+            .push_query(TimeCategory::Composite, timer_query);
         core.preserve_draw_framebuffer();
     }
 
-    fn copy_alpha_tiles_to_dest_blend_texture(&mut self,
-                                              core: &mut RendererCore<D>,
-                                              tile_count: u32,
-                                              vertex_buffer_id: GeneralBufferID) {
-        let draw_viewport = core.draw_viewport();
-
-        let mut textures = vec![];
-        let mut uniforms = vec![
-            (&self.programs.tile_copy_program.transform_uniform,
-             UniformData::Mat4(self.tile_transform(core).to_columns())),
-            (&self.programs.tile_copy_program.tile_size_uniform,
-             UniformData::Vec2(F32x2::new(TILE_WIDTH as f32, TILE_HEIGHT as f32))),
-        ];
-
-        let draw_framebuffer = match core.draw_render_target() {
-            RenderTarget::Framebuffer(framebuffer) => framebuffer,
-            RenderTarget::Default => panic!("Can't copy alpha tiles from default framebuffer!"),
-        };
-        let draw_texture = core.device.framebuffer_texture(&draw_framebuffer);
-
-        textures.push((&self.programs.tile_copy_program.src_texture, draw_texture));
-        uniforms.push((&self.programs.tile_copy_program.framebuffer_size_uniform,
-                       UniformData::Vec2(draw_viewport.size().to_f32().0)));
-
-        let quads_vertex_indices_buffer_id = self.quads_vertex_indices_buffer_id
-                                                 .expect("Where's the quads vertex buffer?");
-        let quads_vertex_indices_buffer = core.allocator
-                                              .get_index_buffer(quads_vertex_indices_buffer_id);
-        let vertex_buffer = core.allocator.get_general_buffer(vertex_buffer_id);
-
-        let tile_copy_vertex_array = CopyTileVertexArray::new(&core.device,
-                                                              &self.programs.tile_copy_program,
-                                                              vertex_buffer,
-                                                              quads_vertex_indices_buffer);
-
-        let dest_blend_framebuffer = core.allocator
-                                         .get_framebuffer(self.dest_blend_framebuffer_id);
-
-        core.device.draw_elements(tile_count * 6, &RenderState {
-            target: &RenderTarget::Framebuffer(dest_blend_framebuffer),
-            program: &self.programs.tile_copy_program.program,
-            vertex_array: &tile_copy_vertex_array.vertex_array,
-            primitive: Primitive::Triangles,
-            textures: &textures,
-            images: &[],
-            storage_buffers: &[],
-            uniforms: &uniforms,
-            viewport: draw_viewport,
-            options: RenderOptions {
-                clear_ops: ClearOps {
-                    color: Some(ColorF::new(1.0, 0.0, 0.0, 1.0)),
-                    ..ClearOps::default()
-                },
-                ..RenderOptions::default()
-            },
-        });
-
+    fn copy_alpha_tiles_to_dest_blend_texture(
+        &mut self,
+        core: &mut RendererCore,
+        _tile_count: u32,
+        _vertex_buffer_id: GeneralBufferID,
+    ) {
         core.stats.drawcall_count += 1;
     }
 
-    fn stencil_state(&self, core: &RendererCore<D>) -> Option<StencilState> {
-        if !core.renderer_flags.contains(RendererFlags::USE_DEPTH) {
-            return None;
-        }
-
-        Some(StencilState {
-            func: StencilFunc::Equal,
-            reference: 1,
-            mask: 1,
-            write: false,
-        })
-    }
-
-    fn mask_viewport(&self, core: &RendererCore<D>) -> RectI {
+    fn mask_viewport(&self, core: &RendererCore) -> RectI {
         let page_count = match core.mask_storage {
             Some(ref mask_storage) => mask_storage.allocated_page_count as i32,
             None => 0,
         };
-        let height = MASK_FRAMEBUFFER_HEIGHT * page_count;
-        RectI::new(Vector2I::default(), vec2i(MASK_FRAMEBUFFER_WIDTH, height))
+        let height = MASK_TEXTURE_HEIGHT * page_count;
+        RectI::new(Vector2I::default(), vec2i(MASK_TEXTURE_WIDTH, height))
     }
 
-    fn tile_transform(&self, core: &RendererCore<D>) -> Transform4F {
+    fn tile_transform(&self, core: &RendererCore) -> Transform4F {
         let draw_viewport = core.draw_viewport().size().to_f32();
         let scale = Vector4F::new(2.0 / draw_viewport.x(), -2.0 / draw_viewport.y(), 1.0, 1.0);
         Transform4F::from_scale(scale).translate(Vector4F::new(-1.0, 1.0, 0.0, 1.0))
@@ -564,7 +856,7 @@ impl<D> RendererD3D9<D> where D: Device {
 pub(crate) struct TileBatchInfoD3D9 {
     pub(crate) tile_count: u32,
     pub(crate) z_buffer_id: GeneralBufferID,
-    tile_vertex_buffer_id: GeneralBufferID,
+    _tile_vertex_buffer_id: GeneralBufferID,
 }
 
 #[derive(Clone)]

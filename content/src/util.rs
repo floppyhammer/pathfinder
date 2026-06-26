@@ -27,7 +27,7 @@ pub(crate) fn hash_transform2f<H>(transform: Transform2F, state: &mut H) where H
 
 pub(crate) fn hash_f32<H>(value: f32, state: &mut H) where H: Hasher {
     unsafe {
-        let data: u32 = mem::transmute::<f32, u32>(value);
+        let data: u32 = f32::to_bits(value);
         data.hash(state);
     }
 }

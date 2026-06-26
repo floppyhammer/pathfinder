@@ -1,6 +1,6 @@
 // pathfinder/demo/common/src/device.rs
 //
-// Copyright © 2019 The Pathfinder Project Developers.
+// Copyright © 2026 The Pathfinder Project Developers.
 //
 // Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
 // http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -10,73 +10,45 @@
 
 //! GPU rendering code specifically for the demo.
 
-use pathfinder_gpu::{BufferTarget, Device, VertexAttrClass, VertexAttrDescriptor, VertexAttrType};
+use pathfinder_gpu::Device;
 use pathfinder_resources::ResourceLoader;
 
-pub struct GroundProgram<D>
-where
-    D: Device,
-{
-    pub program: D::Program,
-    pub transform_uniform: D::Uniform,
-    pub gridline_count_uniform: D::Uniform,
-    pub ground_color_uniform: D::Uniform,
-    pub gridline_color_uniform: D::Uniform,
+pub struct GroundProgram {
+    pub pipeline: wgpu::RenderPipeline,
+    pub transform_uniform: u32,
+    pub gridline_count_uniform: u32,
+    pub ground_color_uniform: u32,
+    pub gridline_color_uniform: u32,
 }
 
-impl<D> GroundProgram<D>
-where
-    D: Device,
-{
-    pub fn new(device: &D, resources: &dyn ResourceLoader) -> GroundProgram<D> {
-        let program = device.create_raster_program(resources, "demo_ground");
-        let transform_uniform = device.get_uniform(&program, "Transform");
-        let gridline_count_uniform = device.get_uniform(&program, "GridlineCount");
-        let ground_color_uniform = device.get_uniform(&program, "GroundColor");
-        let gridline_color_uniform = device.get_uniform(&program, "GridlineColor");
+impl GroundProgram {
+    pub fn new(device: &Device, resources: &dyn ResourceLoader) -> GroundProgram {
+        let pipeline = device.create_render_pipeline(resources, "demo_ground", None);
         GroundProgram {
-            program,
-            transform_uniform,
-            gridline_count_uniform,
-            ground_color_uniform,
-            gridline_color_uniform,
+            pipeline,
+            transform_uniform: 0,
+            gridline_count_uniform: 1,
+            ground_color_uniform: 2,
+            gridline_color_uniform: 3,
         }
     }
 }
 
-pub struct GroundVertexArray<D>
-where
-    D: Device,
-{
-    pub vertex_array: D::VertexArray,
+pub struct GroundVertexArray {
+    pub vertex_buffer: wgpu::Buffer,
+    pub index_buffer: wgpu::Buffer,
 }
 
-impl<D> GroundVertexArray<D>
-where
-    D: Device,
-{
+impl GroundVertexArray {
     pub fn new(
-        device: &D,
-        ground_program: &GroundProgram<D>,
-        quad_vertex_positions_buffer: &D::Buffer,
-        quad_vertex_indices_buffer: &D::Buffer,
-    ) -> GroundVertexArray<D> {
-        let vertex_array = device.create_vertex_array();
-
-        let position_attr = device.get_vertex_attr(&ground_program.program, "Position").unwrap();
-
-        device.bind_buffer(&vertex_array, quad_vertex_positions_buffer, BufferTarget::Vertex);
-        device.configure_vertex_attr(&vertex_array, &position_attr, &VertexAttrDescriptor {
-            size: 2,
-            class: VertexAttrClass::Int,
-            attr_type: VertexAttrType::I16,
-            stride: 4,
-            offset: 0,
-            divisor: 0,
-            buffer_index: 0,
-        });
-        device.bind_buffer(&vertex_array, quad_vertex_indices_buffer, BufferTarget::Index);
-
-        GroundVertexArray { vertex_array }
+        _device: &Device,
+        _ground_program: &GroundProgram,
+        quad_vertex_positions_buffer: &wgpu::Buffer,
+        quad_vertex_indices_buffer: &wgpu::Buffer,
+    ) -> GroundVertexArray {
+        GroundVertexArray {
+            vertex_buffer: quad_vertex_positions_buffer.clone(),
+            index_buffer: quad_vertex_indices_buffer.clone(),
+        }
     }
 }

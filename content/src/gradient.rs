@@ -14,13 +14,12 @@ use crate::util;
 use pathfinder_color::ColorU;
 use pathfinder_geometry::line_segment::LineSegment2F;
 use pathfinder_geometry::transform2d::Transform2F;
-use pathfinder_geometry::vector::Vector2F;
 use pathfinder_geometry::util as geometry_util;
+use pathfinder_geometry::vector::Vector2F;
 use pathfinder_simd::default::F32x2;
 use std::cmp::Ordering;
 use std::convert;
 use std::hash::{Hash, Hasher};
-use std::mem;
 
 /// A gradient, either linear or radial.
 #[derive(Clone, PartialEq, Debug)]
@@ -112,7 +111,7 @@ impl Hash for ColorStop {
     fn hash<H>(&self, state: &mut H) where H: Hasher {
         unsafe {
             self.color.hash(state);
-            let offset = mem::transmute::<f32, u32>(self.offset);
+            let offset = f32::to_bits(self.offset);
             offset.hash(state);
         }
     }

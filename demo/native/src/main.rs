@@ -1,6 +1,6 @@
 // pathfinder/demo/native/src/main.rs
 //
-// Copyright © 2019 The Pathfinder Project Developers.
+// Copyright © 2026 The Pathfinder Project Developers.
 //
 // Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
 // http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -8,64 +8,27 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-//! A demo app for Pathfinder using SDL 2.
+//! A demo app for Pathfinder using winit.
 
-#[macro_use]
-extern crate lazy_static;
-
-#[cfg(all(target_os = "macos", not(feature = "pf-gl")))]
-extern crate objc;
-
-use euclid::default::Size2D;
 use nfd::Response;
-use pathfinder_demo::window::{Event, Keycode, DataPath, View, Window, WindowSize};
+use pathfinder_demo::window::{DataPath, Event, Keycode, SurfaceTextureHandle, View, Window, WindowSize};
 use pathfinder_demo::{DemoApp, Options};
 use pathfinder_geometry::rect::RectI;
-use pathfinder_geometry::vector::{Vector2I, vec2i};
+use pathfinder_geometry::vector::{vec2i, Vector2I};
+use pathfinder_gpu::{Device as PathfinderDevice, Texture};
+use pathfinder_resources::embedded::EmbeddedResourceLoader;
 use pathfinder_resources::ResourceLoader;
-use pathfinder_resources::fs::FilesystemResourceLoader;
-use std::cell::Cell;
-use std::collections::VecDeque;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
-use std::sync::Mutex;
-use surfman::{SurfaceAccess, SurfaceType, declare_surfman};
-use winit::{ControlFlow, ElementState, Event as WinitEvent, EventsLoop, EventsLoopProxy};
-use winit::{MouseButton, VirtualKeyCode, Window as WinitWindow, WindowBuilder, WindowEvent};
+use std::sync::Arc;
 use winit::dpi::LogicalSize;
-
-#[cfg(any(not(target_os = "macos"), feature = "pf-gl"))]
-use gl::types::GLuint;
-#[cfg(any(not(target_os = "macos"), feature = "pf-gl"))]
-use gl;
-#[cfg(any(not(target_os = "macos"), feature = "pf-gl"))]
-use surfman::{Connection, Context, ContextAttributeFlags, ContextAttributes};
-#[cfg(any(not(target_os = "macos"), feature = "pf-gl"))]
-use surfman::{Device, GLVersion as SurfmanGLVersion};
-#[cfg(all(target_os = "macos", not(feature = "pf-gl")))]
-use io_surface::IOSurfaceRef;
-#[cfg(all(target_os = "macos", not(feature = "pf-gl")))]
-use pathfinder_metal::MetalDevice;
-#[cfg(all(target_os = "macos", not(feature = "pf-gl")))]
-use surfman::{NativeDevice, SystemConnection, SystemDevice, SystemSurface};
-
-declare_surfman!();
-
-#[cfg(any(not(target_os = "macos"), feature = "pf-gl"))]
-use pathfinder_gl::{GLDevice, GLVersion};
-
-#[cfg(not(windows))]
-use jemallocator;
-
-#[cfg(not(windows))]
-#[global_allocator]
-static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
+use winit::event::{ElementState, Event as WinitEvent, KeyEvent, MouseButton, WindowEvent};
+use winit::event_loop::{ControlFlow, EventLoop};
+use winit::keyboard::{Key, NamedKey};
+use winit::window::{Window as WinitWindow, WindowBuilder};
 
 const DEFAULT_WINDOW_WIDTH: u32 = 1067;
 const DEFAULT_WINDOW_HEIGHT: u32 = 800;
-
-lazy_static! {
-    static ref EVENT_QUEUE: Mutex<Option<EventQueue>> = Mutex::new(None);
-}
 
 fn main() {
     color_backtrace::install();
@@ -75,155 +38,190 @@ fn main() {
     let mut options = Options::default();
     options.command_line_overrides();
 
-    let window = WindowImpl::new(&options);
-    let window_size = window.size();
+    let event_loop = EventLoop::new().unwrap();
+    let window_builder = WindowBuilder::new()
+        .with_title("Pathfinder Demo")
+        .with_inner_size(LogicalSize::new(DEFAULT_WINDOW_WIDTH as f64, DEFAULT_WINDOW_HEIGHT as f64));
 
-    let mut app = DemoApp::new(window, window_size, options);
+    let window = Arc::new(window_builder.build(&event_loop).unwrap());
 
-    while !app.should_exit {
-        let mut events = vec![];
-        if !app.dirty {
-            events.push(app.window.get_event());
-        }
-        while let Some(event) = app.window.try_get_event() {
-            events.push(event);
-        }
+    let instance = wgpu::Instance::default();
+    let surface = instance.create_surface(window.clone()).unwrap();
 
-        let scene_count = app.prepare_frame(events);
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: if options.high_performance_gpu {
+            wgpu::PowerPreference::HighPerformance
+        } else {
+            wgpu::PowerPreference::LowPower
+        },
+        compatible_surface: Some(&surface),
+        force_fallback_adapter: false,
+    })).unwrap();
 
-        app.draw_scene();
-        app.begin_compositing();
-        for scene_index in 0..scene_count {
-            app.composite_scene(scene_index);
-        }
-        app.finish_drawing_frame();
+    // Configure D3D11 backend for native read_write support
+    let mut required_features = wgpu::Features::empty();
+    if adapter.features().contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES) {
+        required_features |= wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
     }
+
+    let (device, queue) = pollster::block_on(adapter.request_device(
+        &wgpu::DeviceDescriptor {
+            label: None,
+            required_features,
+            required_limits: wgpu::Limits::default(),
+            memory_hints: Default::default(),
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            trace: wgpu::Trace::default(),
+        },
+    )).unwrap();
+
+    let device = Arc::new(device);
+    let queue = Arc::new(queue);
+
+    let pathfinder_device = PathfinderDevice::new(device.clone(),
+                                                  queue.clone(),
+                                                  adapter.get_info().name,
+                                                  adapter.get_info().backend.to_str().to_string());
+
+    let mut config = surface.get_default_config(&adapter,
+        window.inner_size().width,
+        window.inner_size().height).unwrap();
+    // Use Rgba8Unorm to match blit pipeline format (instead of default Rgba8UnormSrgb)
+    config.format = wgpu::TextureFormat::Rgba8Unorm;
+    surface.configure(&device, &config);
+
+    let window_impl = WindowImpl {
+        window: window.clone(),
+        surface,
+        device: device.clone(),
+        queue: queue.clone(),
+        pathfinder_device,
+        config: RefCell::new(config),
+        resource_loader: EmbeddedResourceLoader::new(),
+        next_user_event_id: Cell::new(0),
+        pending_open_path: RefCell::new(None),
+    };
+
+    let window_size = window_impl.size();
+    let mut app = DemoApp::new(window_impl, window_size, options);
+
+    event_loop.set_control_flow(ControlFlow::Poll);
+
+    let mut last_mouse_position = vec2i(0, 0);
+    let mut mouse_pressed = false;
+    let mut pending_events = vec![];
+
+    event_loop.run(move |event, window_target| {
+        match event {
+            WinitEvent::WindowEvent { event, .. } => match event {
+                WindowEvent::CloseRequested => window_target.exit(),
+                WindowEvent::Resized(physical_size) => {
+                    if physical_size.width > 0 && physical_size.height > 0 {
+                        let mut config = app.window.config.borrow_mut();
+                        config.width = physical_size.width;
+                        config.height = physical_size.height;
+                        config.format = wgpu::TextureFormat::Rgba8Unorm;
+                        app.window.surface.configure(&app.window.device, &config);
+                        pending_events.push(Event::WindowResized(app.window.size()));
+                        app.window.window.request_redraw();
+                    }
+                }
+                WindowEvent::RedrawRequested => {
+                    {
+                        let config = app.window.config.borrow();
+                        if config.width == 0 || config.height == 0 {
+                            return;
+                        }
+                    }
+                    if let Some(path) = app.window.pending_open_path.borrow_mut().take() {
+                        pending_events.push(Event::OpenData(DataPath::Path(path)));
+                    }
+                    let scene_count = app.prepare_frame(pending_events.drain(..).collect());
+                    app.draw_scene();
+                    app.begin_compositing();
+                    for scene_index in 0..scene_count {
+                        app.composite_scene(scene_index);
+                    }
+                    app.finish_drawing_frame();
+                }
+                _ => {
+                    if let Some(pf_event) = map_winit_event(&event, &mut last_mouse_position, &mut mouse_pressed) {
+                        pending_events.push(pf_event);
+                        app.window.window.request_redraw();
+                    }
+                }
+            }
+            WinitEvent::AboutToWait => {
+                app.window.window.request_redraw();
+            }
+            _ => {}
+        }
+    }).unwrap();
 }
 
 struct WindowImpl {
-    window: WinitWindow,
-
-    #[cfg(any(not(target_os = "macos"), feature = "pf-gl"))]
-    context: Context,
-    #[cfg(any(not(target_os = "macos"), feature = "pf-gl"))]
-    #[allow(dead_code)]
-    connection: Connection,
-    #[cfg(any(not(target_os = "macos"), feature = "pf-gl"))]
-    device: Device,
-
-    #[cfg(all(target_os = "macos", not(feature = "pf-gl")))]
-    #[allow(dead_code)]
-    connection: SystemConnection,
-    #[cfg(all(target_os = "macos", not(feature = "pf-gl")))]
-    device: SystemDevice,
-    #[cfg(all(target_os = "macos", not(feature = "pf-gl")))]
-    metal_device: NativeDevice,
-    #[cfg(all(target_os = "macos", not(feature = "pf-gl")))]
-    surface: SystemSurface,
-
-    event_loop: EventsLoop,
-    pending_events: VecDeque<Event>,
-    mouse_position: Vector2I,
-    mouse_down: bool,
+    window: Arc<WinitWindow>,
+    surface: wgpu::Surface<'static>,
+    device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
+    pathfinder_device: PathfinderDevice,
+    config: RefCell<wgpu::SurfaceConfiguration>,
+    resource_loader: EmbeddedResourceLoader,
     next_user_event_id: Cell<u32>,
-
-    #[allow(dead_code)]
-    resource_loader: FilesystemResourceLoader,
-}
-
-struct EventQueue {
-    event_loop_proxy: EventsLoopProxy,
-    pending_custom_events: VecDeque<CustomEvent>,
-}
-
-#[derive(Clone)]
-enum CustomEvent {
-    User { message_type: u32, message_data: u32 },
-    OpenData(PathBuf),
+    pending_open_path: RefCell<Option<PathBuf>>,
 }
 
 impl Window for WindowImpl {
-    #[cfg(not(target_os = "macos"))]
-    fn gl_version(&self) -> GLVersion {
-        GLVersion::GL4
+    fn device(&self) -> &PathfinderDevice {
+        &self.pathfinder_device
     }
 
-    #[cfg(all(target_os = "macos", feature = "pf-gl"))]
-    fn gl_version(&self) -> GLVersion {
-        GLVersion::GL3
+    fn present(&mut self) {
+        // Deprecated - use present_texture instead
     }
 
-    #[cfg(any(not(target_os = "macos"), feature = "pf-gl"))]
-    fn gl_default_framebuffer(&self) -> GLuint {
-        self.device.context_surface_info(&self.context).unwrap().unwrap().framebuffer_object
+    fn present_texture(&mut self, texture: &Texture) {
+        // Deprecated - blit is now handled by renderer.blit_to_surface()
     }
 
-    #[cfg(all(target_os = "macos", not(feature = "pf-gl")))]
-    fn metal_device(&self) -> metal::Device {
-        // FIXME(pcwalton): Remove once `surfman` upgrades `metal-rs` version.
-        unsafe {
-            std::mem::transmute(self.metal_device.0.clone())
-        }
+    fn get_current_surface(&mut self) -> Option<SurfaceTextureHandle> {
+        let surface_texture = match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(st) => st,
+            wgpu::CurrentSurfaceTexture::Suboptimal(st) => st,
+            wgpu::CurrentSurfaceTexture::Timeout => return None,
+            wgpu::CurrentSurfaceTexture::Outdated => {
+                let config = self.config.borrow().clone();
+                self.surface.configure(self.device.as_ref(), &config);
+                return None;
+            }
+            wgpu::CurrentSurfaceTexture::Lost => {
+                return None;
+            }
+            wgpu::CurrentSurfaceTexture::Occluded => return None,
+            wgpu::CurrentSurfaceTexture::Validation => return None,
+        };
+
+        let config = self.config.borrow();
+        let size = vec2i(config.width as i32, config.height as i32);
+        Some(SurfaceTextureHandle::new(surface_texture, size))
     }
 
-    #[cfg(all(target_os = "macos", not(feature = "pf-gl")))]
-    fn metal_io_surface(&self) -> IOSurfaceRef {
-        self.device.native_surface(&self.surface).0
-    }
+    fn make_current(&mut self, _view: View) {}
 
     fn viewport(&self, view: View) -> RectI {
-        let WindowSize { logical_size, backing_scale_factor } = self.size();
-        let mut size = (logical_size.to_f32() * backing_scale_factor).to_i32();
+        let config = self.config.borrow();
+        let size = vec2i(config.width as i32, config.height as i32);
         let mut x_offset = 0;
+        let mut viewport_size = size;
         if let View::Stereo(index) = view {
-            size.set_x(size.x() / 2);
-            x_offset = size.x() * (index as i32);
+            viewport_size.set_x(size.x() / 2);
+            x_offset = viewport_size.x() * (index as i32);
         }
-        RectI::new(vec2i(x_offset, 0), size)
-    }
-
-    #[cfg(any(not(target_os = "macos"), feature = "pf-gl"))]
-    fn make_current(&mut self, _view: View) {
-        self.device.make_context_current(&self.context).unwrap();
-    }
-
-    #[cfg(all(target_os = "macos", not(feature = "pf-gl")))]
-    fn make_current(&mut self, _: View) {}
-
-    #[cfg(any(not(target_os = "macos"), feature = "pf-gl"))]
-    fn present(&mut self, _: &mut GLDevice) {
-        let mut surface = self.device
-                              .unbind_surface_from_context(&mut self.context)
-                              .unwrap()
-                              .unwrap();
-        self.device.present_surface(&mut self.context, &mut surface).unwrap();
-        self.device.bind_surface_to_context(&mut self.context, surface).unwrap();
-    }
-
-    #[cfg(all(target_os = "macos", not(feature = "pf-gl")))]
-    fn present(&mut self, metal_device: &mut MetalDevice) {
-        self.device.present_surface(&mut self.surface).expect("Failed to present surface!");
-        metal_device.swap_texture(self.device.native_surface(&self.surface).0);
+        RectI::new(vec2i(x_offset, 0), viewport_size)
     }
 
     fn resource_loader(&self) -> &dyn ResourceLoader {
         &self.resource_loader
-    }
-
-    fn present_open_svg_dialog(&mut self) {
-        if let Ok(Response::Okay(path)) = nfd::open_file_dialog(Some("svg,pdf"), None) {
-            let mut event_queue = EVENT_QUEUE.lock().unwrap();
-            let event_queue = event_queue.as_mut().unwrap();
-            event_queue.pending_custom_events.push_back(CustomEvent::OpenData(PathBuf::from(path)));
-            drop(event_queue.event_loop_proxy.wakeup());
-        }
-    }
-
-    fn run_save_dialog(&self, extension: &str) -> Result<PathBuf, ()> {
-        match nfd::open_save_dialog(Some(extension), None) {
-            Ok(Response::Okay(file)) => Ok(PathBuf::from(file)),
-            _ => Err(()),
-        }
     }
 
     fn create_user_event_id(&self) -> u32 {
@@ -232,265 +230,80 @@ impl Window for WindowImpl {
         id
     }
 
-    fn push_user_event(message_type: u32, message_data: u32) {
-        let mut event_queue = EVENT_QUEUE.lock().unwrap();
-        let event_queue = event_queue.as_mut().unwrap();
-        event_queue.pending_custom_events.push_back(CustomEvent::User {
-            message_type,
-            message_data,
-        });
-        drop(event_queue.event_loop_proxy.wakeup());
+    fn push_user_event(_message_type: u32, _message_data: u32) {
+        // TODO: proxy.send_event
+    }
+
+    fn present_open_svg_dialog(&mut self) {
+        if let Ok(Response::Okay(path)) = nfd::open_file_dialog(Some("svg"), None) {
+            *self.pending_open_path.borrow_mut() = Some(PathBuf::from(path));
+            self.window.request_redraw();
+        }
+    }
+
+    fn run_save_dialog(&self, extension: &str) -> Result<PathBuf, ()> {
+        match nfd::open_save_dialog(Some(extension), None) {
+            Ok(Response::Okay(path)) => Ok(PathBuf::from(path)),
+            _ => Err(()),
+        }
     }
 }
 
 impl WindowImpl {
-    #[cfg(any(not(target_os = "macos"), feature = "pf-gl"))]
-    fn new(options: &Options) -> WindowImpl {
-        let event_loop = EventsLoop::new();
-        let window_size = Size2D::new(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT);
-        let logical_size = LogicalSize::new(window_size.width as f64, window_size.height as f64);
-        let window = WindowBuilder::new().with_title("Pathfinder Demo")
-                                         .with_dimensions(logical_size)
-                                         .build(&event_loop)
-                                         .unwrap();
-        window.show();
-
-        let connection = Connection::from_winit_window(&window).unwrap();
-        let native_widget = connection.create_native_widget_from_winit_window(&window).unwrap();
-
-        let adapter = if options.high_performance_gpu {
-            connection.create_hardware_adapter().unwrap()
-        } else {
-            connection.create_low_power_adapter().unwrap()
-        };
-
-        let mut device = connection.create_device(&adapter).unwrap();
-
-        let context_attributes = ContextAttributes {
-            version: SurfmanGLVersion::new(3, 0),
-            flags: ContextAttributeFlags::ALPHA,
-        };
-        let context_descriptor = device.create_context_descriptor(&context_attributes).unwrap();
-
-        let surface_type = SurfaceType::Widget { native_widget };
-        let mut context = device.create_context(&context_descriptor).unwrap();
-        let surface = device.create_surface(&context, SurfaceAccess::GPUOnly, surface_type)
-                            .unwrap();
-        device.bind_surface_to_context(&mut context, surface).unwrap();
-        device.make_context_current(&context).unwrap();
-
-        gl::load_with(|symbol_name| device.get_proc_address(&context, symbol_name));
-
-        let resource_loader = FilesystemResourceLoader::locate();
-
-        *EVENT_QUEUE.lock().unwrap() = Some(EventQueue {
-            event_loop_proxy: event_loop.create_proxy(),
-            pending_custom_events: VecDeque::new(),
-        });
-
-        WindowImpl {
-            window,
-            event_loop,
-            connection,
-            context,
-            device,
-            next_user_event_id: Cell::new(0),
-            pending_events: VecDeque::new(),
-            mouse_position: vec2i(0, 0),
-            mouse_down: false,
-            resource_loader,
-        }
-    }
-
-    #[cfg(all(target_os = "macos", not(feature = "pf-gl")))]
-    fn new(options: &Options) -> WindowImpl {
-        let event_loop = EventsLoop::new();
-        let window_size = Size2D::new(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT);
-        let logical_size = LogicalSize::new(window_size.width as f64, window_size.height as f64);
-        let window = WindowBuilder::new().with_title("Pathfinder Demo")
-                                         .with_dimensions(logical_size)
-                                         .build(&event_loop)
-                                         .unwrap();
-        window.show();
-
-        let connection = SystemConnection::from_winit_window(&window).unwrap();
-        let native_widget = connection.create_native_widget_from_winit_window(&window).unwrap();
-
-        let adapter = if options.high_performance_gpu {
-            connection.create_hardware_adapter().unwrap()
-        } else {
-            connection.create_low_power_adapter().unwrap()
-        };
-
-        let mut device = connection.create_device(&adapter).unwrap();
-        let native_device = device.native_device();
-
-        let surface_type = SurfaceType::Widget { native_widget };
-        let surface = device.create_surface(SurfaceAccess::GPUOnly, surface_type).unwrap();
-
-        let resource_loader = FilesystemResourceLoader::locate();
-
-        *EVENT_QUEUE.lock().unwrap() = Some(EventQueue {
-            event_loop_proxy: event_loop.create_proxy(),
-            pending_custom_events: VecDeque::new(),
-        });
-
-        WindowImpl {
-            window,
-            event_loop,
-            connection,
-            device,
-            metal_device: native_device,
-            surface,
-            next_user_event_id: Cell::new(0),
-            pending_events: VecDeque::new(),
-            mouse_position: vec2i(0, 0),
-            mouse_down: false,
-            resource_loader,
-        }
-    }
-
-    fn window(&self) -> &WinitWindow { &self.window }
-
     fn size(&self) -> WindowSize {
-        let window = self.window();
-        let (monitor, size) = (window.get_current_monitor(), window.get_inner_size().unwrap());
-
         WindowSize {
-            logical_size: vec2i(size.width as i32, size.height as i32),
-            backing_scale_factor: monitor.get_hidpi_factor() as f32,
+            physical_size: vec2i(self.window.inner_size().width as i32, self.window.inner_size().height as i32),
+            scale_factor: self.window.scale_factor() as f32,
         }
-    }
-
-    fn get_event(&mut self) -> Event {
-        if self.pending_events.is_empty() {
-            let window = &self.window;
-            let mouse_position = &mut self.mouse_position;
-            let mouse_down = &mut self.mouse_down;
-            let pending_events = &mut self.pending_events;
-            self.event_loop.run_forever(|winit_event| {
-                //println!("blocking {:?}", winit_event);
-                match convert_winit_event(winit_event,
-                                          window,
-                                          mouse_position,
-                                          mouse_down) {
-                    Some(event) => {
-                        //println!("handled");
-                        pending_events.push_back(event);
-                        ControlFlow::Break
-                    }
-                    None => {
-                        ControlFlow::Continue
-                    }
-                }
-            });
-        }
-
-        self.pending_events.pop_front().expect("Where's the event?")
-    }
-
-    fn try_get_event(&mut self) -> Option<Event> {
-        if self.pending_events.is_empty() {
-            let window = &self.window;
-            let mouse_position = &mut self.mouse_position;
-            let mouse_down = &mut self.mouse_down;
-            let pending_events = &mut self.pending_events;
-            self.event_loop.poll_events(|winit_event| {
-                //println!("nonblocking {:?}", winit_event);
-                if let Some(event) = convert_winit_event(winit_event,
-                                                         window,
-                                                         mouse_position,
-                                                         mouse_down) {
-                    //println!("handled");
-                    pending_events.push_back(event);
-                }
-            });
-        }
-        self.pending_events.pop_front()
     }
 }
 
-fn convert_winit_event(winit_event: WinitEvent,
-                       window: &WinitWindow,
-                       mouse_position: &mut Vector2I,
-                       mouse_down: &mut bool)
-                       -> Option<Event> {
-    match winit_event {
-        WinitEvent::Awakened => {
-            let mut event_queue = EVENT_QUEUE.lock().unwrap();
-            let event_queue = event_queue.as_mut().unwrap();
-            match event_queue.pending_custom_events
-                             .pop_front()
-                             .expect("`Awakened` with no pending custom event!") {
-                CustomEvent::OpenData(data_path) => Some(Event::OpenData(DataPath::Path(data_path))),
-                CustomEvent::User { message_data, message_type } => {
-                    Some(Event::User { message_data, message_type })
-                }
+fn map_winit_event(event: &WindowEvent, last_mouse_position: &mut Vector2I, mouse_pressed: &mut bool) -> Option<Event> {
+    match event {
+        WindowEvent::KeyboardInput { event: KeyEvent { logical_key, state, .. }, .. } => {
+            let keycode = match logical_key {
+                Key::Named(NamedKey::Escape) => Keycode::Escape,
+                Key::Named(NamedKey::Tab) => Keycode::Tab,
+                Key::Character(c) => Keycode::Alphanumeric(c.as_bytes()[0]),
+                _ => return None,
+            };
+            match state {
+                ElementState::Pressed => Some(Event::KeyDown(keycode)),
+                ElementState::Released => Some(Event::KeyUp(keycode)),
             }
         }
-        WinitEvent::WindowEvent { event: window_event, .. } => {
-            match window_event {
-                WindowEvent::MouseInput {
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                    ..
-                } => {
-                    *mouse_down = true;
-                    Some(Event::MouseDown(*mouse_position))
-                }
-                WindowEvent::MouseInput {
-                    state: ElementState::Released,
-                    button: MouseButton::Left,
-                    ..
-                } => {
-                    *mouse_down = false;
-                    None
-                }
-                WindowEvent::CursorMoved { position, .. } => {
-                    *mouse_position = vec2i(position.x as i32, position.y as i32);
-                    if *mouse_down {
-                        Some(Event::MouseDragged(*mouse_position))
-                    } else {
-                        Some(Event::MouseMoved(*mouse_position))
+        WindowEvent::CursorMoved { position, .. } => {
+            let new_position = vec2i(position.x as i32, position.y as i32);
+            *last_mouse_position = new_position;
+            if *mouse_pressed {
+                Some(Event::MouseDragged(new_position))
+            } else {
+                Some(Event::MouseMoved(new_position))
+            }
+        }
+        WindowEvent::MouseInput { state, button, .. } => {
+            if *button == MouseButton::Left {
+                match state {
+                    ElementState::Pressed => {
+                        *mouse_pressed = true;
+                        Some(Event::MouseDown(*last_mouse_position))
+                    }
+                    ElementState::Released => {
+                        *mouse_pressed = false;
+                        Some(Event::MouseUp)
                     }
                 }
-                WindowEvent::KeyboardInput { input, .. } => {
-                    input.virtual_keycode.and_then(|virtual_keycode| {
-                        match virtual_keycode {
-                            VirtualKeyCode::Escape => Some(Keycode::Escape),
-                            VirtualKeyCode::Tab => Some(Keycode::Tab),
-                            virtual_keycode => {
-                                let vk = virtual_keycode as u32;
-                                let vk_a = VirtualKeyCode::A as u32;
-                                let vk_z = VirtualKeyCode::Z as u32;
-                                if vk >= vk_a && vk <= vk_z {
-                                    let character = ((vk - vk_a) + 'A' as u32) as u8;
-                                    Some(Keycode::Alphanumeric(character))
-                                } else {
-                                    None
-                                }
-                            }
-                        }
-                    }).map(|keycode| {
-                        match input.state {
-                            ElementState::Pressed => Event::KeyDown(keycode),
-                            ElementState::Released => Event::KeyUp(keycode),
-                        }
-                    })
-                }
-                WindowEvent::CloseRequested => Some(Event::Quit),
-                WindowEvent::Resized(new_size) => {
-                    let logical_size = vec2i(new_size.width as i32, new_size.height as i32);
-                    let backing_scale_factor =
-                        window.get_current_monitor().get_hidpi_factor() as f32;
-                    Some(Event::WindowResized(WindowSize {
-                        logical_size,
-                        backing_scale_factor,
-                    }))
-                }
-                _ => None,
+            } else {
+                None
             }
         }
+        // WindowEvent::MouseWheel { delta, .. } => {
+        //     let d_dist = match delta {
+        //         winit::event::MouseScrollDelta::LineDelta(_, y) => *y,
+        //         winit::event::MouseScrollDelta::PixelDelta(pos) => pos.y as f32 * 0.05,
+        //     };
+        //     Some(Event::Zoom(d_dist, *last_mouse_position))
+        // }
         _ => None,
     }
 }

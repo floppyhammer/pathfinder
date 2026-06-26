@@ -15,8 +15,7 @@ use crate::window::{View, Window};
 use crate::{BackgroundColor, DemoApp, UIVisibility};
 use image::ColorType;
 use pathfinder_color::{ColorF, ColorU};
-use pathfinder_gpu::{ClearOps, DepthFunc, DepthState, Device, Primitive, RenderOptions};
-use pathfinder_gpu::{RenderState, RenderTarget, TextureData, TextureFormat, UniformData};
+use pathfinder_gpu::{Device, RenderTarget, TextureData, UniformData};
 use pathfinder_geometry::rect::RectI;
 use pathfinder_geometry::transform3d::Transform4F;
 use pathfinder_geometry::vector::{Vector2I, Vector4F};
@@ -61,18 +60,13 @@ impl<W> DemoApp<W> where W: Window {
             Mode::VR => {
                 let viewport = self.window.viewport(View::Stereo(0));
                 if self.scene_framebuffer.is_none()
-                    || self.renderer.device().texture_size(
-                        &self.renderer.device().framebuffer_texture(self.scene_framebuffer
-                                                                        .as_ref()
-                                                                        .unwrap()),
-                    ) != viewport.size()
+                    || self.renderer.device().texture_size(self.scene_framebuffer.as_ref().unwrap()) != viewport.size()
                 {
                     let scene_texture = self
                         .renderer
                         .device()
-                        .create_texture(TextureFormat::RGBA8, viewport.size());
-                    self.scene_framebuffer =
-                        Some(self.renderer.device().create_framebuffer(scene_texture));
+                        .create_texture(wgpu::TextureFormat::Rgba8Unorm, viewport.size(), wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC);
+                    self.scene_framebuffer = Some(scene_texture);
                 }
                 *self.renderer.options_mut() = RendererOptions {
                     dest: DestFramebuffer::Other(self.scene_framebuffer.take().unwrap()),
@@ -165,7 +159,7 @@ impl<W> DemoApp<W> where W: Window {
         self.draw_environment(render_scene_index);
 
         let scene_framebuffer = self.scene_framebuffer.as_ref().unwrap();
-        let scene_texture = self.renderer.device().framebuffer_texture(scene_framebuffer);
+        let scene_texture = scene_framebuffer;
 
         let mut quad_scale = self.scene_metadata.view_box.size().to_4d();
         quad_scale.set_z(1.0);
@@ -230,34 +224,22 @@ impl<W> DemoApp<W> where W: Window {
             None
         };
 
-        self.renderer.device().draw_elements(6, &RenderState {
-            target: &self.renderer.draw_render_target(),
-            program: &self.ground_program.program,
-            vertex_array: &self.ground_vertex_array.vertex_array,
-            primitive: Primitive::Triangles,
-            textures: &[],
-            images: &[],
-            storage_buffers: &[],
-            uniforms: &[
-                (&self.ground_program.transform_uniform,
-                 UniformData::from_transform_3d(&transform)),
-                (&self.ground_program.ground_color_uniform,
-                 UniformData::Vec4(GROUND_SOLID_COLOR.to_f32().0)),
-                (&self.ground_program.gridline_color_uniform,
-                 UniformData::Vec4(GROUND_LINE_COLOR.to_f32().0)),
-                (&self.ground_program.gridline_count_uniform, UniformData::Int(GRIDLINE_COUNT)),
-            ],
-            viewport: self.renderer.draw_viewport(),
-            options: RenderOptions {
-                depth: Some(DepthState { func: DepthFunc::Less, write: true }),
-                clear_ops: ClearOps { color: clear_color, depth: Some(1.0), stencil: Some(0) },
-                ..RenderOptions::default()
-            },
-        });
+        self.renderer.device().draw_instanced(
+            &self.renderer.draw_render_target(),
+            &self.ground_program.pipeline,
+            &[], // TODO: Bind groups for ground
+            &[(&self.ground_vertex_array.vertex_buffer, 0)],
+            Some((&self.ground_vertex_array.index_buffer, 0, wgpu::IndexFormat::Uint32)),
+            6,
+            1,
+            clear_color,
+        );
     }
 
     #[allow(deprecated)]
     fn render_vector_scene(&mut self) {
+        self.renderer.device().begin_commands();
+
         if self.ui_model.mode == Mode::TwoD {
             self.renderer.disable_depth();
         } else {
@@ -266,6 +248,8 @@ impl<W> DemoApp<W> where W: Window {
 
         // Issue render commands!
         self.scene_proxy.render(&mut self.renderer);
+
+        self.renderer.device().end_commands();
     }
 
     pub fn take_raster_screenshot(&mut self, path: PathBuf) {

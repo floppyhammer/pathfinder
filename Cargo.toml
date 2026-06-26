@@ -7,18 +7,13 @@ members = [
     "demo/android/rust",
     "demo/common",
     "demo/native",
-    "examples/canvas_glutin_minimal",
-    "examples/canvas_metal_minimal",
     "examples/canvas_minimal",
     "examples/canvas_moire",
     "examples/canvas_nanovg",
     "examples/canvas_text",
-    "examples/canvas_webgl_minimal",
     "geometry",
-    "gl",
     "gpu",
     "export",
-    "metal",
     "renderer",
     "resources",
     "simd",
@@ -29,25 +24,18 @@ members = [
     "utils/gamma-lut",
     "utils/svg-to-skia",
     "utils/convert",
-    "web_canvas",
-    "webgl",
 ]
 
 default-members = [
-    "c",
     "canvas",
     "content",
     "demo/common",
     "demo/native",
-    "examples/canvas_glutin_minimal",
-    "examples/canvas_minimal",
-    "examples/canvas_moire",
-    "examples/canvas_text",
     "geometry",
-    "gl",
     "gpu",
     "export",
     "renderer",
+    "resources",
     "simd",
     "svg",
     "text",
@@ -61,6 +49,12 @@ default-members = [
 [patch.crates-io]
 pathfinder_geometry = { path = "geometry" }
 pathfinder_simd = { path = "simd" }
+
+[resolver]
+version = "2"
+
+[workspace.dependencies]
+windows = "0.62.2"
 
 [patch."https://github.com/servo/pathfinder"]
 pathfinder_content = { path = "content" }

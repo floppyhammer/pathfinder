@@ -20,7 +20,7 @@ use crate::gpu::perf::{RenderStats, RenderTime};
 use pathfinder_geometry::rect::RectI;
 use pathfinder_geometry::vector::{Vector2I, vec2i};
 use pathfinder_gpu::Device;
-use pathfinder_gpu::allocator::GPUMemoryAllocator;
+use pathfinder_gpu::allocator::GpuMemoryAllocator;
 use pathfinder_resources::ResourceLoader;
 use pathfinder_ui::{FONT_ASCENT, LINE_HEIGHT, PADDING, UIPresenter, WINDOW_COLOR};
 use std::collections::VecDeque;
@@ -40,32 +40,32 @@ const INFO_WINDOW_WIDTH: i32 = 425;
 const INFO_WINDOW_HEIGHT: i32 = LINE_HEIGHT * 2 + PADDING + 2;
 
 /// Manages the debug UI.
-pub struct DebugUIPresenter<D> where D: Device {
+pub struct DebugUiPresenter {
     /// The general UI presenter object.
-    /// 
+    ///
     /// You can use this to draw your own application-specific debug widgets.
-    pub ui_presenter: UIPresenter<D>,
+    pub ui_presenter: UIPresenter,
 
     cpu_samples: SampleBuffer<RenderStats>,
     gpu_samples: SampleBuffer<RenderTime>,
-    backend_name: &'static str,
     device_name: String,
+    backend_name: String,
     renderer_level: RendererLevel,
 }
 
-impl<D> DebugUIPresenter<D> where D: Device {
-    pub(crate) fn new(device: &D,
+impl DebugUiPresenter {
+    pub(crate) fn new(device: &Device,
                       resources: &dyn ResourceLoader,
                       framebuffer_size: Vector2I,
                       renderer_level: RendererLevel)
-                      -> DebugUIPresenter<D> {
+                      -> DebugUiPresenter {
         let ui_presenter = UIPresenter::new(device, resources, framebuffer_size);
-        DebugUIPresenter {
+        DebugUiPresenter {
             ui_presenter,
             cpu_samples: SampleBuffer::new(),
             gpu_samples: SampleBuffer::new(),
-            backend_name: device.backend_name(),
-            device_name: device.device_name(),
+            device_name: device.device_name.clone(),
+            backend_name: device.backend_name.clone(),
             renderer_level,
         }
     }
@@ -75,7 +75,7 @@ impl<D> DebugUIPresenter<D> where D: Device {
         self.gpu_samples.push(rendering_time);
     }
 
-    pub(crate) fn draw(&self, device: &D, allocator: &mut GPUMemoryAllocator<D>) {
+    pub fn draw(&self, device: &Device, allocator: &mut GpuMemoryAllocator) {
         self.draw_stats_window(device, allocator);
         self.draw_performance_window(device, allocator);
         self.draw_info_window(device, allocator);
@@ -86,7 +86,7 @@ impl<D> DebugUIPresenter<D> where D: Device {
         self.ui_presenter.set_framebuffer_size(new_framebuffer_size)
     }
 
-    fn draw_info_window(&self, device: &D, allocator: &mut GPUMemoryAllocator<D>) {
+    fn draw_info_window(&self, device: &Device, allocator: &mut GpuMemoryAllocator) {
         let framebuffer_size = self.ui_presenter.framebuffer_size();
         let bottom = framebuffer_size.y() - PADDING;
         let window_rect = RectI::new(
@@ -104,7 +104,7 @@ impl<D> DebugUIPresenter<D> where D: Device {
         };
         self.ui_presenter.draw_text(device,
                                     allocator,
-                                    &format!("{} ({} level)", self.backend_name, level),
+                                    &format!("{} ({} level)", &self.backend_name, level),
                                     origin + vec2i(0, LINE_HEIGHT * 0),
                                     false);
         self.ui_presenter.draw_text(device,
@@ -112,7 +112,6 @@ impl<D> DebugUIPresenter<D> where D: Device {
                                     &self.device_name,
                                     origin + vec2i(0, LINE_HEIGHT * 1),
                                     false);
-
     }
 
     fn performance_window_size(&self) -> Vector2I {
@@ -124,7 +123,7 @@ impl<D> DebugUIPresenter<D> where D: Device {
         }
     }
 
-    fn draw_stats_window(&self, device: &D, allocator: &mut GPUMemoryAllocator<D>) {
+    fn draw_stats_window(&self, device: &Device, allocator: &mut GpuMemoryAllocator) {
         let performance_window_height = self.performance_window_size().y();
 
         let framebuffer_size = self.ui_presenter.framebuffer_size();
@@ -173,7 +172,7 @@ impl<D> DebugUIPresenter<D> where D: Device {
         );
     }
 
-    fn draw_performance_window(&self, device: &D, allocator: &mut GPUMemoryAllocator<D>) {
+    fn draw_performance_window(&self, device: &Device, allocator: &mut GpuMemoryAllocator) {
         let performance_window_size = self.performance_window_size();
 
         let framebuffer_size = self.ui_presenter.framebuffer_size();

@@ -1,6 +1,6 @@
 // pathfinder/renderer/src/gpu/blend.rs
 //
-// Copyright © 2020 The Pathfinder Project Developers.
+// Copyright © 2026 The Pathfinder Project Developers.
 //
 // Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
 // http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -13,150 +13,182 @@
 use crate::gpu_data::ColorCombineMode;
 use crate::paint::PaintCompositeOp;
 use pathfinder_content::effects::BlendMode;
-use pathfinder_gpu::{BlendFactor, BlendState};
 
-const COMBINER_CTRL_COLOR_COMBINE_SRC_IN:  i32 = 0x1;
+const COMBINER_CTRL_COLOR_COMBINE_SRC_IN: i32 = 0x1;
 const COMBINER_CTRL_COLOR_COMBINE_DEST_IN: i32 = 0x2;
 
-const COMBINER_CTRL_COMPOSITE_NORMAL: i32 =         0x0;
-const COMBINER_CTRL_COMPOSITE_MULTIPLY: i32 =       0x1;
-const COMBINER_CTRL_COMPOSITE_SCREEN: i32 =         0x2;
-const COMBINER_CTRL_COMPOSITE_OVERLAY: i32 =        0x3;
-const COMBINER_CTRL_COMPOSITE_DARKEN: i32 =         0x4;
-const COMBINER_CTRL_COMPOSITE_LIGHTEN: i32 =        0x5;
-const COMBINER_CTRL_COMPOSITE_COLOR_DODGE: i32 =    0x6;
-const COMBINER_CTRL_COMPOSITE_COLOR_BURN: i32 =     0x7;
-const COMBINER_CTRL_COMPOSITE_HARD_LIGHT: i32 =     0x8;
-const COMBINER_CTRL_COMPOSITE_SOFT_LIGHT: i32 =     0x9;
-const COMBINER_CTRL_COMPOSITE_DIFFERENCE: i32 =     0xa;
-const COMBINER_CTRL_COMPOSITE_EXCLUSION: i32 =      0xb;
-const COMBINER_CTRL_COMPOSITE_HUE: i32 =            0xc;
-const COMBINER_CTRL_COMPOSITE_SATURATION: i32 =     0xd;
-const COMBINER_CTRL_COMPOSITE_COLOR: i32 =          0xe;
-const COMBINER_CTRL_COMPOSITE_LUMINOSITY: i32 =     0xf;
+const COMBINER_CTRL_COMPOSITE_NORMAL: i32 = 0x0;
+const COMBINER_CTRL_COMPOSITE_MULTIPLY: i32 = 0x1;
+const COMBINER_CTRL_COMPOSITE_SCREEN: i32 = 0x2;
+const COMBINER_CTRL_COMPOSITE_OVERLAY: i32 = 0x3;
+const COMBINER_CTRL_COMPOSITE_DARKEN: i32 = 0x4;
+const COMBINER_CTRL_COMPOSITE_LIGHTEN: i32 = 0x5;
+const COMBINER_CTRL_COMPOSITE_COLOR_DODGE: i32 = 0x6;
+const COMBINER_CTRL_COMPOSITE_COLOR_BURN: i32 = 0x7;
+const COMBINER_CTRL_COMPOSITE_HARD_LIGHT: i32 = 0x8;
+const COMBINER_CTRL_COMPOSITE_SOFT_LIGHT: i32 = 0x9;
+const COMBINER_CTRL_COMPOSITE_DIFFERENCE: i32 = 0xa;
+const COMBINER_CTRL_COMPOSITE_EXCLUSION: i32 = 0xb;
+const COMBINER_CTRL_COMPOSITE_HUE: i32 = 0xc;
+const COMBINER_CTRL_COMPOSITE_SATURATION: i32 = 0xd;
+const COMBINER_CTRL_COMPOSITE_COLOR: i32 = 0xe;
+const COMBINER_CTRL_COMPOSITE_LUMINOSITY: i32 = 0xf;
 
 pub(crate) trait ToBlendState {
-    fn to_blend_state(self) -> Option<BlendState>;
+    fn to_blend_state(self) -> Option<wgpu::BlendState>;
 }
 
 impl ToBlendState for BlendMode {
-    fn to_blend_state(self) -> Option<BlendState> {
+    fn to_blend_state(self) -> Option<wgpu::BlendState> {
         match self {
-            BlendMode::Clear => {
-                Some(BlendState {
-                    src_rgb_factor: BlendFactor::Zero,
-                    dest_rgb_factor: BlendFactor::Zero,
-                    src_alpha_factor: BlendFactor::Zero,
-                    dest_alpha_factor: BlendFactor::Zero,
-                    ..BlendState::default()
-                })
-            }
-            BlendMode::SrcOver => {
-                Some(BlendState {
-                    src_rgb_factor: BlendFactor::One,
-                    dest_rgb_factor: BlendFactor::OneMinusSrcAlpha,
-                    src_alpha_factor: BlendFactor::One,
-                    dest_alpha_factor: BlendFactor::OneMinusSrcAlpha,
-                    ..BlendState::default()
-                })
-            }
-            BlendMode::DestOver => {
-                Some(BlendState {
-                    src_rgb_factor: BlendFactor::OneMinusDestAlpha,
-                    dest_rgb_factor: BlendFactor::One,
-                    src_alpha_factor: BlendFactor::OneMinusDestAlpha,
-                    dest_alpha_factor: BlendFactor::One,
-                    ..BlendState::default()
-                })
-            }
-            BlendMode::SrcIn => {
-                Some(BlendState {
-                    src_rgb_factor: BlendFactor::DestAlpha,
-                    dest_rgb_factor: BlendFactor::Zero,
-                    src_alpha_factor: BlendFactor::DestAlpha,
-                    dest_alpha_factor: BlendFactor::Zero,
-                    ..BlendState::default()
-                })
-            }
-            BlendMode::DestIn => {
-                Some(BlendState {
-                    src_rgb_factor: BlendFactor::Zero,
-                    dest_rgb_factor: BlendFactor::SrcAlpha,
-                    src_alpha_factor: BlendFactor::Zero,
-                    dest_alpha_factor: BlendFactor::SrcAlpha,
-                    ..BlendState::default()
-                })
-            }
-            BlendMode::SrcOut => {
-                Some(BlendState {
-                    src_rgb_factor: BlendFactor::OneMinusDestAlpha,
-                    dest_rgb_factor: BlendFactor::Zero,
-                    src_alpha_factor: BlendFactor::OneMinusDestAlpha,
-                    dest_alpha_factor: BlendFactor::Zero,
-                    ..BlendState::default()
-                })
-            }
-            BlendMode::DestOut => {
-                Some(BlendState {
-                    src_rgb_factor: BlendFactor::Zero,
-                    dest_rgb_factor: BlendFactor::OneMinusSrcAlpha,
-                    src_alpha_factor: BlendFactor::Zero,
-                    dest_alpha_factor: BlendFactor::OneMinusSrcAlpha,
-                    ..BlendState::default()
-                })
-            }
-            BlendMode::SrcAtop => {
-                Some(BlendState {
-                    src_rgb_factor: BlendFactor::DestAlpha,
-                    dest_rgb_factor: BlendFactor::OneMinusSrcAlpha,
-                    src_alpha_factor: BlendFactor::DestAlpha,
-                    dest_alpha_factor: BlendFactor::OneMinusSrcAlpha,
-                    ..BlendState::default()
-                })
-            }
-            BlendMode::DestAtop => {
-                Some(BlendState {
-                    src_rgb_factor: BlendFactor::OneMinusDestAlpha,
-                    dest_rgb_factor: BlendFactor::SrcAlpha,
-                    src_alpha_factor: BlendFactor::OneMinusDestAlpha,
-                    dest_alpha_factor: BlendFactor::SrcAlpha,
-                    ..BlendState::default()
-                })
-            }
-            BlendMode::Xor => {
-                Some(BlendState {
-                    src_rgb_factor: BlendFactor::OneMinusDestAlpha,
-                    dest_rgb_factor: BlendFactor::OneMinusSrcAlpha,
-                    src_alpha_factor: BlendFactor::OneMinusDestAlpha,
-                    dest_alpha_factor: BlendFactor::OneMinusSrcAlpha,
-                    ..BlendState::default()
-                })
-            }
-            BlendMode::Lighter => {
-                Some(BlendState {
-                    src_rgb_factor: BlendFactor::One,
-                    dest_rgb_factor: BlendFactor::One,
-                    src_alpha_factor: BlendFactor::One,
-                    dest_alpha_factor: BlendFactor::One,
-                    ..BlendState::default()
-                })
-            }
-            BlendMode::Copy |
-            BlendMode::Darken |
-            BlendMode::Lighten |
-            BlendMode::Multiply |
-            BlendMode::Screen |
-            BlendMode::HardLight |
-            BlendMode::Overlay |
-            BlendMode::ColorDodge |
-            BlendMode::ColorBurn |
-            BlendMode::SoftLight |
-            BlendMode::Difference |
-            BlendMode::Exclusion |
-            BlendMode::Hue |
-            BlendMode::Saturation |
-            BlendMode::Color |
-            BlendMode::Luminosity => {
+            BlendMode::Clear => Some(wgpu::BlendState {
+                color: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::Zero,
+                    dst_factor: wgpu::BlendFactor::Zero,
+                    operation: wgpu::BlendOperation::Add,
+                },
+                alpha: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::Zero,
+                    dst_factor: wgpu::BlendFactor::Zero,
+                    operation: wgpu::BlendOperation::Add,
+                },
+            }),
+            BlendMode::SrcOver => Some(wgpu::BlendState {
+                color: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::One,
+                    dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                    operation: wgpu::BlendOperation::Add,
+                },
+                alpha: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::One,
+                    dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                    operation: wgpu::BlendOperation::Add,
+                },
+            }),
+            BlendMode::DestOver => Some(wgpu::BlendState {
+                color: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::OneMinusDstAlpha,
+                    dst_factor: wgpu::BlendFactor::One,
+                    operation: wgpu::BlendOperation::Add,
+                },
+                alpha: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::OneMinusDstAlpha,
+                    dst_factor: wgpu::BlendFactor::One,
+                    operation: wgpu::BlendOperation::Add,
+                },
+            }),
+            BlendMode::SrcIn => Some(wgpu::BlendState {
+                color: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::DstAlpha,
+                    dst_factor: wgpu::BlendFactor::Zero,
+                    operation: wgpu::BlendOperation::Add,
+                },
+                alpha: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::DstAlpha,
+                    dst_factor: wgpu::BlendFactor::Zero,
+                    operation: wgpu::BlendOperation::Add,
+                },
+            }),
+            BlendMode::DestIn => Some(wgpu::BlendState {
+                color: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::Zero,
+                    dst_factor: wgpu::BlendFactor::SrcAlpha,
+                    operation: wgpu::BlendOperation::Add,
+                },
+                alpha: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::Zero,
+                    dst_factor: wgpu::BlendFactor::SrcAlpha,
+                    operation: wgpu::BlendOperation::Add,
+                },
+            }),
+            BlendMode::SrcOut => Some(wgpu::BlendState {
+                color: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::OneMinusDstAlpha,
+                    dst_factor: wgpu::BlendFactor::Zero,
+                    operation: wgpu::BlendOperation::Add,
+                },
+                alpha: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::OneMinusDstAlpha,
+                    dst_factor: wgpu::BlendFactor::Zero,
+                    operation: wgpu::BlendOperation::Add,
+                },
+            }),
+            BlendMode::DestOut => Some(wgpu::BlendState {
+                color: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::Zero,
+                    dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                    operation: wgpu::BlendOperation::Add,
+                },
+                alpha: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::Zero,
+                    dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                    operation: wgpu::BlendOperation::Add,
+                },
+            }),
+            BlendMode::SrcAtop => Some(wgpu::BlendState {
+                color: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::DstAlpha,
+                    dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                    operation: wgpu::BlendOperation::Add,
+                },
+                alpha: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::DstAlpha,
+                    dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                    operation: wgpu::BlendOperation::Add,
+                },
+            }),
+            BlendMode::DestAtop => Some(wgpu::BlendState {
+                color: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::OneMinusDstAlpha,
+                    dst_factor: wgpu::BlendFactor::SrcAlpha,
+                    operation: wgpu::BlendOperation::Add,
+                },
+                alpha: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::OneMinusDstAlpha,
+                    dst_factor: wgpu::BlendFactor::SrcAlpha,
+                    operation: wgpu::BlendOperation::Add,
+                },
+            }),
+            BlendMode::Xor => Some(wgpu::BlendState {
+                color: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::OneMinusDstAlpha,
+                    dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                    operation: wgpu::BlendOperation::Add,
+                },
+                alpha: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::OneMinusDstAlpha,
+                    dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                    operation: wgpu::BlendOperation::Add,
+                },
+            }),
+            BlendMode::Lighter => Some(wgpu::BlendState {
+                color: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::One,
+                    dst_factor: wgpu::BlendFactor::One,
+                    operation: wgpu::BlendOperation::Add,
+                },
+                alpha: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::One,
+                    dst_factor: wgpu::BlendFactor::One,
+                    operation: wgpu::BlendOperation::Add,
+                },
+            }),
+            BlendMode::Copy
+            | BlendMode::Darken
+            | BlendMode::Lighten
+            | BlendMode::Multiply
+            | BlendMode::Screen
+            | BlendMode::HardLight
+            | BlendMode::Overlay
+            | BlendMode::ColorDodge
+            | BlendMode::ColorBurn
+            | BlendMode::SoftLight
+            | BlendMode::Difference
+            | BlendMode::Exclusion
+            | BlendMode::Hue
+            | BlendMode::Saturation
+            | BlendMode::Color
+            | BlendMode::Luminosity => {
                 // Blending is done manually in the shader.
                 None
             }
@@ -171,18 +203,18 @@ pub(crate) trait ToCompositeCtrl {
 impl ToCompositeCtrl for BlendMode {
     fn to_composite_ctrl(&self) -> i32 {
         match *self {
-            BlendMode::SrcOver |
-            BlendMode::SrcAtop |
-            BlendMode::DestOver |
-            BlendMode::DestOut |
-            BlendMode::Xor |
-            BlendMode::Lighter |
-            BlendMode::Clear |
-            BlendMode::Copy |
-            BlendMode::SrcIn |
-            BlendMode::SrcOut |
-            BlendMode::DestIn |
-            BlendMode::DestAtop => COMBINER_CTRL_COMPOSITE_NORMAL,
+            BlendMode::SrcOver
+            | BlendMode::SrcAtop
+            | BlendMode::DestOver
+            | BlendMode::DestOut
+            | BlendMode::Xor
+            | BlendMode::Lighter
+            | BlendMode::Clear
+            | BlendMode::Copy
+            | BlendMode::SrcIn
+            | BlendMode::SrcOut
+            | BlendMode::DestIn
+            | BlendMode::DestAtop => COMBINER_CTRL_COMPOSITE_NORMAL,
             BlendMode::Multiply => COMBINER_CTRL_COMPOSITE_MULTIPLY,
             BlendMode::Darken => COMBINER_CTRL_COMPOSITE_DARKEN,
             BlendMode::Lighten => COMBINER_CTRL_COMPOSITE_LIGHTEN,
@@ -219,33 +251,33 @@ pub trait BlendModeExt {
 impl BlendModeExt for BlendMode {
     fn needs_readable_framebuffer(self) -> bool {
         match self {
-            BlendMode::Clear |
-            BlendMode::SrcOver |
-            BlendMode::DestOver |
-            BlendMode::SrcIn |
-            BlendMode::DestIn |
-            BlendMode::SrcOut |
-            BlendMode::DestOut |
-            BlendMode::SrcAtop |
-            BlendMode::DestAtop |
-            BlendMode::Xor |
-            BlendMode::Lighter |
-            BlendMode::Copy => false,
-            BlendMode::Lighten |
-            BlendMode::Darken |
-            BlendMode::Multiply |
-            BlendMode::Screen |
-            BlendMode::HardLight |
-            BlendMode::Overlay |
-            BlendMode::ColorDodge |
-            BlendMode::ColorBurn |
-            BlendMode::SoftLight |
-            BlendMode::Difference |
-            BlendMode::Exclusion |
-            BlendMode::Hue |
-            BlendMode::Saturation |
-            BlendMode::Color |
-            BlendMode::Luminosity => true,
+            BlendMode::Clear
+            | BlendMode::SrcOver
+            | BlendMode::DestOver
+            | BlendMode::SrcIn
+            | BlendMode::DestIn
+            | BlendMode::SrcOut
+            | BlendMode::DestOut
+            | BlendMode::SrcAtop
+            | BlendMode::DestAtop
+            | BlendMode::Xor
+            | BlendMode::Lighter
+            | BlendMode::Copy => false,
+            BlendMode::Lighten
+            | BlendMode::Darken
+            | BlendMode::Multiply
+            | BlendMode::Screen
+            | BlendMode::HardLight
+            | BlendMode::Overlay
+            | BlendMode::ColorDodge
+            | BlendMode::ColorBurn
+            | BlendMode::SoftLight
+            | BlendMode::Difference
+            | BlendMode::Exclusion
+            | BlendMode::Hue
+            | BlendMode::Saturation
+            | BlendMode::Color
+            | BlendMode::Luminosity => true,
         }
     }
 }
