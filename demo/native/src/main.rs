@@ -11,7 +11,9 @@
 //! A demo app for Pathfinder using winit.
 
 use nfd::Response;
-use pathfinder_demo::window::{DataPath, Event, Keycode, SurfaceTextureHandle, View, Window, WindowSize};
+use pathfinder_demo::window::{
+    DataPath, Event, Keycode, SurfaceTextureHandle, View, Window, WindowSize,
+};
 use pathfinder_demo::{DemoApp, Options};
 use pathfinder_geometry::rect::RectI;
 use pathfinder_geometry::vector::{vec2i, Vector2I};
@@ -41,7 +43,10 @@ fn main() {
     let event_loop = EventLoop::new().unwrap();
     let window_builder = WindowBuilder::new()
         .with_title("Pathfinder Demo")
-        .with_inner_size(LogicalSize::new(DEFAULT_WINDOW_WIDTH as f64, DEFAULT_WINDOW_HEIGHT as f64));
+        .with_inner_size(LogicalSize::new(
+            DEFAULT_WINDOW_WIDTH as f64,
+            DEFAULT_WINDOW_HEIGHT as f64,
+        ));
 
     let window = Arc::new(window_builder.build(&event_loop).unwrap());
 
@@ -56,36 +61,45 @@ fn main() {
         },
         compatible_surface: Some(&surface),
         force_fallback_adapter: false,
-    })).unwrap();
+    }))
+    .unwrap();
 
-    // Configure D3D11 backend for native read_write support
+    // Configure wgpu for native storage texture read_write support (d3d11 level)
     let mut required_features = wgpu::Features::empty();
-    if adapter.features().contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES) {
+    if adapter
+        .features()
+        .contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES)
+    {
         required_features |= wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
     }
 
-    let (device, queue) = pollster::block_on(adapter.request_device(
-        &wgpu::DeviceDescriptor {
-            label: None,
-            required_features,
-            required_limits: wgpu::Limits::default(),
-            memory_hints: Default::default(),
-            experimental_features: wgpu::ExperimentalFeatures::disabled(),
-            trace: wgpu::Trace::default(),
-        },
-    )).unwrap();
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: None,
+        required_features,
+        required_limits: wgpu::Limits::default(),
+        memory_hints: Default::default(),
+        experimental_features: wgpu::ExperimentalFeatures::disabled(),
+        trace: wgpu::Trace::default(),
+    }))
+    .unwrap();
 
     let device = Arc::new(device);
     let queue = Arc::new(queue);
 
-    let pathfinder_device = PathfinderDevice::new(device.clone(),
-                                                  queue.clone(),
-                                                  adapter.get_info().name,
-                                                  adapter.get_info().backend.to_str().to_string());
+    let pathfinder_device = PathfinderDevice::new(
+        device.clone(),
+        queue.clone(),
+        adapter.get_info().name,
+        adapter.get_info().backend.to_str().to_string(),
+    );
 
-    let mut config = surface.get_default_config(&adapter,
-        window.inner_size().width,
-        window.inner_size().height).unwrap();
+    let mut config = surface
+        .get_default_config(
+            &adapter,
+            window.inner_size().width,
+            window.inner_size().height,
+        )
+        .unwrap();
     // Use Rgba8Unorm to match blit pipeline format (instead of default Rgba8UnormSrgb)
     config.format = wgpu::TextureFormat::Rgba8Unorm;
     surface.configure(&device, &config);
@@ -111,8 +125,8 @@ fn main() {
     let mut mouse_pressed = false;
     let mut pending_events = vec![];
 
-    event_loop.run(move |event, window_target| {
-        match event {
+    event_loop
+        .run(move |event, window_target| match event {
             WinitEvent::WindowEvent { event, .. } => match event {
                 WindowEvent::CloseRequested => window_target.exit(),
                 WindowEvent::Resized(physical_size) => {
@@ -145,18 +159,20 @@ fn main() {
                     app.finish_drawing_frame();
                 }
                 _ => {
-                    if let Some(pf_event) = map_winit_event(&event, &mut last_mouse_position, &mut mouse_pressed) {
+                    if let Some(pf_event) =
+                        map_winit_event(&event, &mut last_mouse_position, &mut mouse_pressed)
+                    {
                         pending_events.push(pf_event);
                         app.window.window.request_redraw();
                     }
                 }
-            }
+            },
             WinitEvent::AboutToWait => {
                 app.window.window.request_redraw();
             }
             _ => {}
-        }
-    }).unwrap();
+        })
+        .unwrap();
 }
 
 struct WindowImpl {
@@ -252,15 +268,27 @@ impl Window for WindowImpl {
 impl WindowImpl {
     fn size(&self) -> WindowSize {
         WindowSize {
-            physical_size: vec2i(self.window.inner_size().width as i32, self.window.inner_size().height as i32),
+            physical_size: vec2i(
+                self.window.inner_size().width as i32,
+                self.window.inner_size().height as i32,
+            ),
             scale_factor: self.window.scale_factor() as f32,
         }
     }
 }
 
-fn map_winit_event(event: &WindowEvent, last_mouse_position: &mut Vector2I, mouse_pressed: &mut bool) -> Option<Event> {
+fn map_winit_event(
+    event: &WindowEvent,
+    last_mouse_position: &mut Vector2I,
+    mouse_pressed: &mut bool,
+) -> Option<Event> {
     match event {
-        WindowEvent::KeyboardInput { event: KeyEvent { logical_key, state, .. }, .. } => {
+        WindowEvent::KeyboardInput {
+            event: KeyEvent {
+                logical_key, state, ..
+            },
+            ..
+        } => {
             let keycode = match logical_key {
                 Key::Named(NamedKey::Escape) => Keycode::Escape,
                 Key::Named(NamedKey::Tab) => Keycode::Tab,
