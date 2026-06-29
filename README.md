@@ -1,11 +1,17 @@
-# Pathfinder 3
+# Pathfinder 3 (`wgpu` Migration Fork)
 
 ![Logo](https://github.com/servo/pathfinder/raw/main/resources/textures/pathfinder-logo.png)
 
-Pathfinder 3 is a fast, practical, GPU-based rasterizer for fonts and vector graphics using OpenGL
-3.0+, OpenGL ES 3.0+, WebGL 2, and Metal.
+Pathfinder 3 is a fast, practical, GPU-based rasterizer for fonts and vector graphics using wgpu.
 
-Please note that Pathfinder is under heavy development and is incomplete in various areas.
+> 💡 **Maintenance Note**: This is a modernized fork of the original `servo/pathfinder` repository. Since the upstream project is no longer actively maintained, this fork aims to breathe new life into Pathfinder by migrating its graphics pipeline to `wgpu`, resolving modern compilation errors, and keeping the technology alive.
+
+## Current Status
+
+The codebase is currently undergoing an incremental migration to `wgpu`. Below is the modern backend implementation progress:
+
+- [x] **D3D9 Backend Migration**: Fully migrated to `wgpu` and verified functional.
+- [ ] **D3D11 Backend Migration**: *[In Progress]* Active refactoring of binding layouts and compute shaders to ensure strict consistency.
 
 ## Quick start
 
