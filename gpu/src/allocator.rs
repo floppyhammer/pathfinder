@@ -25,10 +25,10 @@ const MAX_BUFFER_SIZE_CLASS: u64 = 16 * 1024 * 1024;
 // TODO(pcwalton): jemalloc uses a sigmoidal decay curve here. Consider something similar.
 const DECAY_TIME: f32 = 0.250;
 
-// Number of seconds before we can reuse an object buffer.
+// Number of frames to wait before we can reuse an object.
 //
-// This helps avoid stalls. This is admittedly a bit of a hack.
-const REUSE_TIME: f32 = 0.050;
+// This helps avoid stalls and ensure that the GPU is no longer using the resource.
+const MAX_FRAMES_IN_FLIGHT: u64 = 3;
 
 pub struct GpuMemoryAllocator {
     general_buffers_in_use: FxHashMap<GeneralBufferID, BufferAllocation>,
@@ -40,6 +40,7 @@ pub struct GpuMemoryAllocator {
     next_texture_id: TextureID,
     bytes_committed: u64,
     bytes_allocated: u64,
+    current_frame: u64,
 }
 
 struct BufferAllocation {
@@ -56,6 +57,7 @@ struct TextureAllocation {
 
 struct FreeObject {
     timestamp: Instant,
+    frame: u64,
     kind: FreeObjectKind,
 }
 
@@ -113,7 +115,12 @@ impl GpuMemoryAllocator {
             next_texture_id: TextureID(0),
             bytes_committed: 0,
             bytes_allocated: 0,
+            current_frame: 0,
         }
+    }
+
+    pub fn begin_frame(&mut self) {
+        self.current_frame += 1;
     }
 
     pub fn allocate_general_buffer<T>(
@@ -127,15 +134,14 @@ impl GpuMemoryAllocator {
             byte_size = byte_size.next_power_of_two();
         }
 
-        let now = Instant::now();
-
         for free_object_index in 0..self.free_objects.len() {
             match self.free_objects[free_object_index] {
                 FreeObject {
-                    ref timestamp,
+                    frame,
                     kind: FreeObjectKind::GeneralBuffer { ref allocation, .. },
+                    ..
                 } if allocation.size == byte_size
-                    && (now - *timestamp).as_secs_f32() >= REUSE_TIME => {}
+                    && self.current_frame - frame >= MAX_FRAMES_IN_FLIGHT => {}
                 _ => continue,
             }
 
@@ -170,7 +176,7 @@ impl GpuMemoryAllocator {
             id,
             byte_size,
             size,
-            mem::size_of::<T>(),
+            size_of::<T>(),
             tag
         );
 
@@ -199,15 +205,14 @@ impl GpuMemoryAllocator {
             byte_size = byte_size.next_power_of_two();
         }
 
-        let now = Instant::now();
-
         for free_object_index in 0..self.free_objects.len() {
             match self.free_objects[free_object_index] {
                 FreeObject {
-                    ref timestamp,
+                    frame,
                     kind: FreeObjectKind::IndexBuffer { ref allocation, .. },
+                    ..
                 } if allocation.size == byte_size
-                    && (now - *timestamp).as_secs_f32() >= REUSE_TIME => {}
+                    && self.current_frame - frame >= MAX_FRAMES_IN_FLIGHT => {}
                 _ => continue,
             }
 
@@ -275,9 +280,11 @@ impl GpuMemoryAllocator {
         for free_object_index in 0..self.free_objects.len() {
             match self.free_objects[free_object_index] {
                 FreeObject {
+                    frame,
                     kind: FreeObjectKind::Texture { ref allocation, .. },
                     ..
-                } if allocation.descriptor == descriptor => {}
+                } if allocation.descriptor == descriptor
+                    && self.current_frame - frame >= MAX_FRAMES_IN_FLIGHT => {}
                 _ => continue,
             }
 
@@ -359,6 +366,7 @@ impl GpuMemoryAllocator {
         self.bytes_committed -= allocation.size;
         self.free_objects.push_back(FreeObject {
             timestamp: Instant::now(),
+            frame: self.current_frame,
             kind: FreeObjectKind::GeneralBuffer { id, allocation },
         });
     }
@@ -371,6 +379,7 @@ impl GpuMemoryAllocator {
         self.bytes_committed -= allocation.size;
         self.free_objects.push_back(FreeObject {
             timestamp: Instant::now(),
+            frame: self.current_frame,
             kind: FreeObjectKind::IndexBuffer { id, allocation },
         });
     }
@@ -384,6 +393,7 @@ impl GpuMemoryAllocator {
         self.bytes_committed -= byte_size;
         self.free_objects.push_back(FreeObject {
             timestamp: Instant::now(),
+            frame: self.current_frame,
             kind: FreeObjectKind::Texture { id, allocation },
         });
     }

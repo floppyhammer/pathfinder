@@ -592,6 +592,7 @@ impl Renderer {
     }
 
     pub fn begin_scene(&mut self) {
+        self.core.allocator.begin_frame();
         self.core.stats = RenderStats::default();
         self.core.alpha_tile_count = 0;
         self.core
